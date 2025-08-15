@@ -8,6 +8,7 @@ import "core:math"
 import "core:math/linalg"
 import "core:os"
 import "core:strings"
+import "core:time"
 import sapp "shared:sokol/app"
 import sa "shared:sokol/audio"
 import sg "shared:sokol/gfx"
@@ -367,18 +368,13 @@ wav: WavContents
 init :: proc "c" () {
 	context = default_context
 
-	wav.file_path = "audio/loon.wav"
+	//wav.file_path = "audio/loon.wav"
+	wav.file_path = "../game/assets/audio/scoop.wav"
 	wav.is_playing = true
 	wav.is_music = true
 	load_wav(&wav)
 
-	sa.setup(
-		{
-			sample_rate = wav.frequency,
-			num_channels = i32(wav.channels),
-			logger = {func = slog.func},
-		},
-	)
+	sa.setup({logger = {func = slog.func}})
 	log.debugf("%s setup audio", DONE)
 
 	errs, valid := validate_audio(wav)
@@ -392,20 +388,20 @@ init :: proc "c" () {
 	log.debugf("%s validate audio", DONE)
 }
 
-frame :: proc "c" () {
+frame :: proc "c" (dt: f64) {
 	context = default_context
 
-	update_audio()
+	update_audio(dt)
 }
 
-update_audio :: proc() {
+update_audio :: proc(dt: f64) {
 
 	num_frames := int(sa.expect())
 	if num_frames > 0 {
 
 		buf := make([]f32, num_frames)
 		outer: for frame in 0 ..< num_frames {
-			log.assert(wav.channels == 2, "wav pointers are invalid")
+			log.assertf(wav.channels != 0, "wav pointers are invalid: channels %d", wav.channels)
 			if !wav.is_playing do continue
 
 			for channel in 0 ..< wav.channels {
@@ -421,6 +417,8 @@ update_audio :: proc() {
 				wav.sample_idx += 1
 			}
 		}
+
+		log.debugf("len buffer %d: frames %d", len(buf), num_frames)
 		sa.push(&buf[0], num_frames)
 	}
 }
@@ -455,13 +453,29 @@ cleanup :: proc "c" () {
 	sa.shutdown()
 }
 
+FRAMERATE :: 60.0
+TIMESTEP :: 1.0 / FRAMERATE
+accumulator := 0.0
+start_time := time.now()
+
 main :: proc() {
 	context.logger = log.create_console_logger()
 	default_context = context
 
 	init()
 
-	for true {
-		frame()
+	for {
+		current_time := time.now()
+
+		diff := time.diff(start_time, current_time)
+		dt := time.duration_seconds(diff)
+		start_time = current_time
+
+		accumulator += dt
+
+		for accumulator >= TIMESTEP {
+			frame(accumulator)
+			accumulator -= TIMESTEP
+		}
 	}
 }
