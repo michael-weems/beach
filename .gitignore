@@ -1,5 +1,7 @@
 # binary output
-game
+beach
+
+audio/
 
 # generated shader bindings for odin
 *_glsl.odin

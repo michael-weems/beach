@@ -125,6 +125,7 @@ WavContents :: struct {
 	loop:        bool,
 	is_music:    bool,
 }
+
 AUDIO_FREQ := i32(44100)
 AUDIO_CHANNELS := i16(2)
 
@@ -146,53 +147,48 @@ Vertex :: struct {
 	uv:    Vec2,
 }
 
-Audio :: enum {
-	//music_ocean_beats,
-	music_bounce,
-	effect_phaser,
+WavErrors :: struct {
+	frequency: string,
+	channels:  string,
+	sokol:     string,
 }
 
-validate_audio :: proc() {
-	for audio, index in Audio {
-		_, ok := g.audio[audio]
-		log.assertf(ok, "%s audio: validate: registry missing audio: %s", FAIL, audio)
-	}
+@(require_results)
+validate_audio :: proc(wav: WavContents) -> (WavErrors, bool) {
+	errs: WavErrors
+	valid := true
 
-	freq: i32
-	for key, value in g.audio {
-		if freq == 0 {
-			log.infof("frequency: %d", value.frequency)
-			freq = value.frequency
-		}
-
-		log.assertf(
-			freq == value.frequency,
-			"%s audio: validate: freq mismatch: %d != %d: %s",
-			FAIL,
-			freq,
-			value.frequency,
-			value.file_path,
+	switch wav.frequency {
+	case 0:
+		valid = false
+		errs.frequency = fmt.aprintf("error: file %s: missing frequency", wav.file_path)
+	case AUDIO_FREQ:
+		errs.frequency = fmt.aprintf(
+			"warn : file %s: possible frequency mismatch: expected %f: received %f",
+			wav.file_path,
+			AUDIO_FREQ,
+			wav.frequency,
 		)
 	}
 
-	channels: i16
-	for key, value in g.audio {
-		if channels == 0 {
-			log.infof("# channels: %d", value.channels)
-			channels = value.channels
-		}
-
-		log.assertf(
-			channels == value.channels,
-			"%s audio: validate: channel mismatch: %d != %d: %s",
-			FAIL,
-			channels,
-			value.channels,
-			value.file_path,
+	switch wav.channels {
+	case 0:
+		valid = false
+		errs.channels = fmt.aprintf("error: file %s: missing channels", wav.file_path)
+	case AUDIO_CHANNELS:
+		errs.channels = fmt.aprintf(
+			"warn : file %s: possible frequency mismatch: expected %f: received %f",
+			wav.file_path,
+			AUDIO_CHANNELS,
+			wav.channels,
 		)
 	}
+	if !sa.isvalid() {
+		valid = false
+		errs.sokol = fmt.aprintf("%s sokol audio setup is not valid", FAIL)
+	}
 
-	log.assertf(sa.isvalid(), "%s sokol audio setup is not valid", FAIL)
+	return errs, valid
 }
 
 load_wav :: proc(contents: ^WavContents) {
@@ -362,58 +358,67 @@ load_wav :: proc(contents: ^WavContents) {
 	log.assert(len(contents.samples_raw) != 0, "contents.samples_raw length is 0")
 }
 
-effect_phaser := WavContents {
-	file_path = "assets/audio/phaser.wav",
-}
 music_bounce := WavContents {
 	file_path = "assets/audio/bounce.wav",
 }
 
+wav: WavContents
 
 init :: proc "c" () {
 	context = default_context
 
-	//load_wav(g.audio[.effect_phaser])
+	wav.file_path = "audio/loon.wav"
+	wav.is_playing = true
+	wav.is_music = true
+	load_wav(&wav)
 
-	sa.setup({logger = {func = slog.func}})
+	sa.setup(
+		{
+			sample_rate = wav.frequency,
+			num_channels = i32(wav.channels),
+			logger = {func = slog.func},
+		},
+	)
 	log.debugf("%s setup audio", DONE)
 
-	validate_audio()
+	errs, valid := validate_audio(wav)
+	if !valid {
+		// TODO: gracefully handle errors in the wav file, but keep the program running
+		// NOTE: for now, assert and crash
+		log.assertf(errs.sokol == "", errs.sokol)
+		log.assertf(errs.frequency == "", errs.frequency)
+		log.assertf(errs.channels == "", errs.channels)
+	}
 	log.debugf("%s validate audio", DONE)
 }
 
 frame :: proc "c" () {
 	context = default_context
 
-	dt := f32(sapp.frame_duration())
-
-	update_audio(dt)
+	update_audio()
 }
 
-update_audio :: proc(dt: f32) {
+update_audio :: proc() {
 
 	num_frames := int(sa.expect())
 	if num_frames > 0 {
 
 		buf := make([]f32, num_frames)
-		for frame in 0 ..< num_frames {
-			track: for key, audio in g.audio {
-				log.assert(audio.channels == 2, "g.audio pointers are invalid")
+		outer: for frame in 0 ..< num_frames {
+			log.assert(wav.channels == 2, "wav pointers are invalid")
+			if !wav.is_playing do continue
 
-				if !audio.is_playing do continue
-
-				for channel in 0 ..< audio.channels {
-					if audio.sample_idx >= len(audio.samples_raw) {
-						audio.sample_idx = 0
-						if !audio.loop {
-							audio.is_playing = false
-							continue track
-						}
+			for channel in 0 ..< wav.channels {
+				if wav.sample_idx >= len(wav.samples_raw) {
+					wav.sample_idx = 0
+					if !wav.loop {
+						wav.is_playing = false
+						break outer
 					}
-
-					buf[frame] += audio.samples_raw[audio.sample_idx]
-					audio.sample_idx += 1
 				}
+
+				buf[frame] += wav.samples_raw[wav.sample_idx]
+				wav.sample_idx += 1
 			}
 		}
 		sa.push(&buf[0], num_frames)
@@ -454,17 +459,9 @@ main :: proc() {
 	context.logger = log.create_console_logger()
 	default_context = context
 
-	sapp.run(
-		{
-			init_cb = init,
-			frame_cb = frame,
-			event_cb = event,
-			cleanup_cb = cleanup,
-			width = 1920,
-			height = 1080,
-			window_title = "triangle",
-			icon = {sokol_default = true},
-			logger = {func = slog.func},
-		},
-	)
+	init()
+
+	for true {
+		frame()
+	}
 }
