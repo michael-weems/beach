@@ -452,11 +452,13 @@ frame :: proc "c" () {
 }
 
 iteration := 0
-update_state :: proc(dt: f32) {
-	if key_down[.SPACE] {
-		active_wav.is_playing = !active_wav.is_playing
-	}
+State :: enum {
+	Menu,
+	Player,
+}
+state: State
 
+update_menu_state :: proc(dt: f32) {
 	do_play_audio :: proc() {
 		if iteration < 0 do iteration = 0
 		if iteration >= len(wav_registry) do iteration = len(wav_registry) - 1
@@ -475,21 +477,64 @@ update_state :: proc(dt: f32) {
 	if key_down[.H] {
 		iteration -= 1
 		do_play_audio()
+		return
 	} else if key_down[.J] {
 		iteration -= 10
 		do_play_audio()
+		return
 	} else if key_down[.K] {
 		iteration += 10
 		do_play_audio()
+		return
 	} else if key_down[.L] {
 		iteration += 1
 		do_play_audio()
+		return
+	}
+
+}
+
+update_player_state :: proc(dt: f32) {
+	if key_down[.SPACE] {
+		active_wav.is_playing = !active_wav.is_playing
+		return
+	}
+
+	if key_down[.H] {
+		active_wav.sample_idx -= 20000
+		if active_wav.sample_idx < 0 do active_wav.sample_idx = 0
+		return
+	} else if key_down[.J] {
+		active_wav.sample_idx -= 80000
+		if active_wav.sample_idx < 0 do active_wav.sample_idx = 0
+		return
+	} else if key_down[.K] {
+		active_wav.sample_idx += 80000
+		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = 0
+		return
+	} else if key_down[.L] {
+		active_wav.sample_idx += 20000
+		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = 0
+		return
+	}
+
+}
+
+update_state :: proc(dt: f32) {
+	if key_down[.LEFT_CONTROL] && key_down[.H] {
+		state = State.Menu
+	} else if key_down[.LEFT_CONTROL] && key_down[.L] {
+		state = State.Player
+	}
+
+	switch state {
+	case .Menu:
+		update_menu_state(dt)
+	case .Player:
+		update_player_state(dt)
 	}
 
 
-	if key_down[.ENTER] {
-		// TODO: song selection from navigation
-	}
 }
 
 update_audio :: proc(dt: f32) {
