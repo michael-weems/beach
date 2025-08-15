@@ -13,6 +13,7 @@ import sapp "shared:sokol/app"
 import sa "shared:sokol/audio"
 import sg "shared:sokol/gfx"
 import sglue "shared:sokol/glue"
+//import sgp "shared:sokol/gp"
 import slog "shared:sokol/log"
 import stbi "vendor:stb/image"
 
@@ -155,7 +156,7 @@ WavErrors :: struct {
 }
 
 @(require_results)
-validate_audio :: proc(wav: WavContents) -> (WavErrors, bool) {
+validate_wav :: proc(wav: WavContents) -> (WavErrors, bool) {
 	errs: WavErrors
 	valid := true
 
@@ -183,10 +184,6 @@ validate_audio :: proc(wav: WavContents) -> (WavErrors, bool) {
 			AUDIO_CHANNELS,
 			wav.channels,
 		)
-	}
-	if !sa.isvalid() {
-		valid = false
-		errs.sokol = fmt.aprintf("%s sokol audio setup is not valid", FAIL)
 	}
 
 	return errs, valid
@@ -384,56 +381,150 @@ music_bounce := WavContents {
 	file_path = "assets/audio/bounce.wav",
 }
 
-wav: WavContents
+// TODO: cache recently played up to certain amount to save on load time for switching back and forth?
+
+active_file := "../game/assets/audio/bounce.wav"
+
+active_wav: ^WavContents
+
+play_audio :: proc(file_path: string) {
+	sa.shutdown()
+	sa.setup({logger = {func = slog.func}})
+	log.debugf("%s setup audio", DONE)
+	log.assertf(sa.isvalid(), "%s sokol audio setup is not valid", FAIL)
+
+	active_wav = &wav_registry[file_path]
+
+	active_wav.sample_idx = 0
+	active_wav.is_playing = true
+	active_wav.is_music = true
+}
 
 init :: proc "c" () {
 	context = default_context
 
-	//wav.file_path = "audio/loon.wav"
-	wav.file_path = "../game/assets/audio/bounce.wav"
-	wav.is_playing = true
-	wav.is_music = true
-	load_wav(&wav)
+	load_dir("/home/dang/audio/field")
 
-	sa.setup({logger = {func = slog.func}})
 	log.debugf("%s setup audio", DONE)
-
-	errs, valid := validate_audio(wav)
-	if !valid {
-		// TODO: gracefully handle errors in the wav file, but keep the program running
-		// NOTE: for now, assert and crash
-		log.assertf(errs.sokol == "", errs.sokol)
-		log.assertf(errs.frequency == "", errs.frequency)
-		log.assertf(errs.channels == "", errs.channels)
-	}
-	log.debugf("%s validate audio", DONE)
 }
 
-frame :: proc "c" (dt: f64) {
+wav_registry: map[string]WavContents
+
+load_dir :: proc(dir: string) {
+	fd, err := os.open(dir)
+	log.assertf(err == nil, "open dir: %s: %v", dir, err)
+
+	entries, read_err := os.read_dir(fd, 1000)
+	log.assertf(read_err == nil, "read dir: %s: %v", dir, read_err)
+
+	for e in entries {
+		if e.is_dir do continue
+		if !strings.contains(e.name, ".wav") do continue
+
+		val, ok := wav_registry[e.fullpath]
+		if !ok {
+			wav_registry[e.fullpath] = WavContents {
+				file_path = e.fullpath,
+			}
+
+			load_wav(&wav_registry[e.fullpath])
+			errs, valid := validate_wav(wav_registry[e.fullpath])
+			if !valid {
+				//delete(wav_registry[e.fullpath])
+				log.infof("invalid wav file: %s", e.fullpath)
+				// TODO: gracefully handle errors in the wav file, but keep the program running
+				// NOTE: for now, assert and crash
+				//log.assertf(errs.sokol == "", errs.sokol)
+				//log.assertf(errs.frequency == "", errs.frequency)
+				//log.assertf(errs.channels == "", errs.channels)
+			}
+		}
+	}
+}
+
+total_time: f32 = 0.0
+TOGGLE_TIME :: 10.0
+
+frame :: proc "c" () {
 	context = default_context
+
+	dt := f32(sapp.frame_duration())
+
+	total_time += dt
+	if TOGGLE_TIME - total_time <= 0 {
+
+		total_time = 0.0
+	}
 
 	update_audio(dt)
 }
 
-update_audio :: proc(dt: f64) {
+update_state :: proc(dt: f32) {
+	if key_down[.SPACE] {
+		active_wav.is_playing = !active_wav.is_playing
+	}
 
+	// TODO: directional menu navigation
+	if key_down[.H] {
+		for filepath, wav in wav_registry {
+			active_wav = &wav_registry[filepath]
+			break
+		}
+	} else if key_down[.J] {
+		count := 0
+		for filepath, wav in wav_registry {
+			if count == 1 {
+				active_wav = &wav_registry[filepath]
+				break
+			}
+			count += 1
+		}
+	} else if key_down[.K] {
+		count := 0
+		for filepath, wav in wav_registry {
+			if count == 2 {
+				active_wav = &wav_registry[filepath]
+				break
+			}
+			count += 1
+		}
+	} else if key_down[.L] {
+		count := 0
+		for filepath, wav in wav_registry {
+			if count == 3 {
+				active_wav = &wav_registry[filepath]
+				break
+			}
+			count += 1
+		}
+	}
+
+	if key_down[.ENTER] {
+		// TODO: song selection from navigation
+	}
+}
+
+update_audio :: proc(dt: f32) {
 	num_frames := int(sa.expect())
 	if num_frames > 0 {
-
 		buf := make([]f32, num_frames)
 		frame_loop: for frame in 0 ..< num_frames {
-			log.assertf(wav.channels != 0, "wav pointers are invalid: channels %d", wav.channels)
-			if !wav.is_playing do continue
+			log.assertf(
+				active_wav.channels != 0,
+				"wav pointers are invalid: channels %d",
+				active_wav.channels,
+			)
+			if !active_wav.is_playing do continue
 
-			for channel in 0 ..< wav.channels {
-				if wav.sample_idx >= len(wav.samples_raw) {
-					wav.sample_idx = 0
-					wav.is_playing = false
+			for channel in 0 ..< active_wav.channels {
+				if active_wav.sample_idx >= len(active_wav.samples_raw) {
+					active_wav.sample_idx = 0
+					active_wav.is_playing = false
 					continue frame_loop
 				}
 
-				buf[frame] += wav.samples_raw[wav.sample_idx]
-				wav.sample_idx += 1
+				buf[frame] += active_wav.samples_raw[active_wav.sample_idx]
+				active_wav.sample_idx += 1
 			}
 		}
 
@@ -480,20 +571,18 @@ main :: proc() {
 	context.logger = log.create_console_logger()
 	default_context = context
 
-	init()
+	sapp.run(
+		{
+			init_cb = init,
+			frame_cb = frame,
+			event_cb = event,
+			cleanup_cb = cleanup,
+			width = 1920,
+			height = 1080,
+			window_title = "triangle",
+			icon = {sokol_default = true},
+			logger = {func = slog.func},
+		},
+	)
 
-	for {
-		current_time := time.now()
-
-		diff := time.diff(start_time, current_time)
-		dt := time.duration_seconds(diff)
-		start_time = current_time
-
-		accumulator += dt
-
-		for accumulator >= TIMESTEP {
-			frame(accumulator)
-			accumulator -= TIMESTEP
-		}
-	}
 }
