@@ -114,17 +114,17 @@ WaveDataHeader :: struct #packed {
 
 WavContents :: struct {
 	// config
-	channels:    i16,
-	frequency:   i32,
+	channels:      i16,
+	frequency:     i32,
 	// data
-	samples_raw: []f32,
-	samples:     ^f32,
+	samples_raw:   []f32,
+	samples:       ^f32,
 	// metadata
-	file_path:   string,
-	sample_idx:  int,
-	is_playing:  bool,
-	loop:        bool,
-	is_music:    bool,
+	file_path:     string,
+	sample_idx:    int,
+	is_playing:    bool,
+	is_music:      bool,
+	time_duration: int, // ms
 }
 
 AUDIO_FREQ := i32(44100)
@@ -249,7 +249,7 @@ load_wav :: proc(contents: ^WavContents) {
 			log.debugf("- frequency: %d", format.frequency)
 			log.debugf("- byte per sec: %d", format.byte_per_sec)
 			log.debugf("- byte per bloc: %d", format.byte_per_bloc)
-			log.debugf("- bits per sample: %d", ieee_format.bits_per_sample)
+			log.debugf("- bits per sample: %d", format.bits_per_sample)
 
 			switch format.audio_format {
 			case WAVE_FORMAT_IEEE_FLOAT:
@@ -339,6 +339,10 @@ load_wav :: proc(contents: ^WavContents) {
 
 			contents.samples = &contents.samples_raw[0]
 
+		case "cue ":
+			// TODO: cue chunk and handling sample offsets
+			offset += size_of(ChunkHeader)
+			offset += int(chunk.chunk_size)
 		case "bext":
 			offset += size_of(ChunkHeader)
 			offset += int(chunk.chunk_size)
@@ -354,9 +358,26 @@ load_wav :: proc(contents: ^WavContents) {
 		}
 	}
 
+	per_sample := ((int(contents.channels) * int(format.bits_per_sample) / 8))
+
+	contents.time_duration = len(contents.samples_raw) / per_sample
+	log.debug("contents")
+	log.debugf("- audio duration: %s", time_string(contents.time_duration))
+
 	log.assert(contents.frequency != 0, "contents.freqency is 0")
 	log.assert(contents.channels != 0, "contents.channels is 0")
 	log.assert(len(contents.samples_raw) != 0, "contents.samples_raw length is 0")
+}
+
+time_string :: proc(ms: int) -> string {
+
+	total_seconds := ms / 1000
+	seconds := total_seconds % 60
+	minutes := (total_seconds / 60) % 60
+	hours := total_seconds / 3600
+
+	time_string := fmt.aprintf("%02d:%02d:%02d (note: verify this)", hours, minutes, seconds)
+	return time_string // Output: 10:35:14
 }
 
 music_bounce := WavContents {
@@ -369,7 +390,7 @@ init :: proc "c" () {
 	context = default_context
 
 	//wav.file_path = "audio/loon.wav"
-	wav.file_path = "../game/assets/audio/scoop.wav"
+	wav.file_path = "../game/assets/audio/bounce.wav"
 	wav.is_playing = true
 	wav.is_music = true
 	load_wav(&wav)
@@ -400,17 +421,15 @@ update_audio :: proc(dt: f64) {
 	if num_frames > 0 {
 
 		buf := make([]f32, num_frames)
-		outer: for frame in 0 ..< num_frames {
+		frame_loop: for frame in 0 ..< num_frames {
 			log.assertf(wav.channels != 0, "wav pointers are invalid: channels %d", wav.channels)
 			if !wav.is_playing do continue
 
 			for channel in 0 ..< wav.channels {
 				if wav.sample_idx >= len(wav.samples_raw) {
 					wav.sample_idx = 0
-					if !wav.loop {
-						wav.is_playing = false
-						break outer
-					}
+					wav.is_playing = false
+					continue frame_loop
 				}
 
 				buf[frame] += wav.samples_raw[wav.sample_idx]
@@ -418,7 +437,6 @@ update_audio :: proc(dt: f64) {
 			}
 		}
 
-		log.debugf("len buffer %d: frames %d", len(buf), num_frames)
 		sa.push(&buf[0], num_frames)
 	}
 }
