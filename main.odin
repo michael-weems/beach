@@ -405,7 +405,7 @@ play_audio :: proc(file_path: string) {
 init :: proc "c" () {
 	context = default_context
 
-	load_dir("/home/dang/audio/field")
+	load_dir(audio_dir)
 }
 
 wav_registry: map[string]WavContents
@@ -430,7 +430,7 @@ load_dir :: proc(dir: string) {
 			load_wav(&wav_registry[e.fullpath])
 			errs, valid := validate_wav(wav_registry[e.fullpath])
 			if !valid {
-				//delete(wav_registry[e.fullpath])
+				delete_key(&wav_registry, e.fullpath)
 				log.infof("invalid wav file: %s", e.fullpath)
 				// TODO: gracefully handle errors in the wav file, but keep the program running
 				// NOTE: for now, assert and crash
@@ -451,45 +451,41 @@ frame :: proc "c" () {
 	update_audio(dt)
 }
 
+iteration := 0
 update_state :: proc(dt: f32) {
 	if key_down[.SPACE] {
 		active_wav.is_playing = !active_wav.is_playing
 	}
 
-	// TODO: directional menu navigation
-	if key_down[.H] {
-		for filepath, wav in wav_registry {
-			play_audio(filepath)
-			break
-		}
-	} else if key_down[.J] {
+	do_play_audio :: proc() {
+		if iteration < 0 do iteration = 0
+		if iteration >= len(wav_registry) do iteration = len(wav_registry) - 1
+
 		count := 0
 		for filepath, wav in wav_registry {
-			if count == 1 {
-				play_audio(filepath)
-				break
-			}
-			count += 1
-		}
-	} else if key_down[.K] {
-		count := 0
-		for filepath, wav in wav_registry {
-			if count == 2 {
-				play_audio(filepath)
-				break
-			}
-			count += 1
-		}
-	} else if key_down[.L] {
-		count := 0
-		for filepath, wav in wav_registry {
-			if count == 3 {
+			if iteration == count {
 				play_audio(filepath)
 				break
 			}
 			count += 1
 		}
 	}
+
+	// TODO: directional menu navigation
+	if key_down[.H] {
+		iteration -= 1
+		do_play_audio()
+	} else if key_down[.J] {
+		iteration -= 10
+		do_play_audio()
+	} else if key_down[.K] {
+		iteration += 10
+		do_play_audio()
+	} else if key_down[.L] {
+		iteration += 1
+		do_play_audio()
+	}
+
 
 	if key_down[.ENTER] {
 		// TODO: song selection from navigation
@@ -561,9 +557,17 @@ TIMESTEP :: 1.0 / FRAMERATE
 accumulator := 0.0
 start_time := time.now()
 
+audio_dir: string
+
 main :: proc() {
 	context.logger = log.create_console_logger()
 	default_context = context
+
+	audio_dir = os.args[1]
+	log.assertf(
+		audio_dir != "",
+		"bad input: must provide <wav-file-directory> as first positional argument",
+	)
 
 	sapp.run(
 		{

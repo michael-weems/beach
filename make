@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 
-odin run . -debug
+odin build . -debug
+./beach $HOME/audio/field
