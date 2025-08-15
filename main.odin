@@ -388,7 +388,9 @@ active_file := "../game/assets/audio/bounce.wav"
 active_wav: ^WavContents
 
 play_audio :: proc(file_path: string) {
-	sa.shutdown()
+	log.debugf("playing: %s", file_path)
+	if active_wav != nil do sa.shutdown()
+
 	sa.setup({logger = {func = slog.func}})
 	log.debugf("%s setup audio", DONE)
 	log.assertf(sa.isvalid(), "%s sokol audio setup is not valid", FAIL)
@@ -404,8 +406,6 @@ init :: proc "c" () {
 	context = default_context
 
 	load_dir("/home/dang/audio/field")
-
-	log.debugf("%s setup audio", DONE)
 }
 
 wav_registry: map[string]WavContents
@@ -442,20 +442,12 @@ load_dir :: proc(dir: string) {
 	}
 }
 
-total_time: f32 = 0.0
-TOGGLE_TIME :: 10.0
-
 frame :: proc "c" () {
 	context = default_context
 
 	dt := f32(sapp.frame_duration())
 
-	total_time += dt
-	if TOGGLE_TIME - total_time <= 0 {
-
-		total_time = 0.0
-	}
-
+	update_state(dt)
 	update_audio(dt)
 }
 
@@ -467,14 +459,14 @@ update_state :: proc(dt: f32) {
 	// TODO: directional menu navigation
 	if key_down[.H] {
 		for filepath, wav in wav_registry {
-			active_wav = &wav_registry[filepath]
+			play_audio(filepath)
 			break
 		}
 	} else if key_down[.J] {
 		count := 0
 		for filepath, wav in wav_registry {
 			if count == 1 {
-				active_wav = &wav_registry[filepath]
+				play_audio(filepath)
 				break
 			}
 			count += 1
@@ -483,7 +475,7 @@ update_state :: proc(dt: f32) {
 		count := 0
 		for filepath, wav in wav_registry {
 			if count == 2 {
-				active_wav = &wav_registry[filepath]
+				play_audio(filepath)
 				break
 			}
 			count += 1
@@ -492,7 +484,7 @@ update_state :: proc(dt: f32) {
 		count := 0
 		for filepath, wav in wav_registry {
 			if count == 3 {
-				active_wav = &wav_registry[filepath]
+				play_audio(filepath)
 				break
 			}
 			count += 1
@@ -505,6 +497,9 @@ update_state :: proc(dt: f32) {
 }
 
 update_audio :: proc(dt: f32) {
+	if active_wav == nil do return
+	if !active_wav.is_playing do return
+
 	num_frames := int(sa.expect())
 	if num_frames > 0 {
 		buf := make([]f32, num_frames)
@@ -514,7 +509,6 @@ update_audio :: proc(dt: f32) {
 				"wav pointers are invalid: channels %d",
 				active_wav.channels,
 			)
-			if !active_wav.is_playing do continue
 
 			for channel in 0 ..< active_wav.channels {
 				if active_wav.sample_idx >= len(active_wav.samples_raw) {
