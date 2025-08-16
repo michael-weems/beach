@@ -510,11 +510,11 @@ update_player_state :: proc(dt: f32) {
 		return
 	} else if key_down[.K] {
 		active_wav.sample_idx += 80000
-		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = 0
+		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = len(active_wav.samples_raw) - 40000
 		return
 	} else if key_down[.L] {
 		active_wav.sample_idx += 20000
-		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = 0
+		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = len(active_wav.samples_raw) - 40000
 		return
 	}
 
