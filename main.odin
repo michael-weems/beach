@@ -155,6 +155,14 @@ WavErrors :: struct {
 	sokol:     string,
 }
 
+Globals :: struct {
+	waves:         [dynamic]WavContents,
+	playing:       ^WavContents,
+	playing_index: int,
+	index:         int,
+}
+g: ^Globals
+
 @(require_results)
 validate_wav :: proc(wav: WavContents) -> (WavErrors, bool) {
 	errs: WavErrors
@@ -383,32 +391,30 @@ music_bounce := WavContents {
 
 // TODO: cache recently played up to certain amount to save on load time for switching back and forth?
 
-active_file := "../game/assets/audio/bounce.wav"
-
-active_wav: ^WavContents
-
-play_audio :: proc(file_path: string) {
-	log.debugf("playing: %s", file_path)
-	if active_wav != nil do sa.shutdown()
+play_audio :: proc() {
+	if g.playing != nil do sa.shutdown()
 
 	sa.setup({logger = {func = slog.func}})
 	log.debugf("%s setup audio", DONE)
 	log.assertf(sa.isvalid(), "%s sokol audio setup is not valid", FAIL)
 
-	active_wav = &wav_registry[file_path]
+	g.playing_index = g.index
+	g.playing = &g.waves[g.playing_index]
 
-	active_wav.sample_idx = 0
-	active_wav.is_playing = true
-	active_wav.is_music = true
+	g.playing.sample_idx = 0
+	g.playing.is_playing = true
+	g.playing.is_music = true
 }
 
 init :: proc "c" () {
 	context = default_context
 
-	load_dir(audio_dir)
-}
+	g = new(Globals)
 
-wav_registry: map[string]WavContents
+	load_dir(audio_dir)
+
+	play_audio()
+}
 
 load_dir :: proc(dir: string) {
 	fd, err := os.open(dir)
@@ -417,28 +423,32 @@ load_dir :: proc(dir: string) {
 	entries, read_err := os.read_dir(fd, 1000)
 	log.assertf(read_err == nil, "read dir: %s: %v", dir, read_err)
 
+	num_entries := len(entries)
+
+	if len(g.waves) != 0 do delete(g.waves)
+	g.waves = {}
+
+	index := 0
 	for e in entries {
 		if e.is_dir do continue
 		if !strings.contains(e.name, ".wav") do continue
 
-		val, ok := wav_registry[e.fullpath]
-		if !ok {
-			wav_registry[e.fullpath] = WavContents {
-				file_path = e.fullpath,
-			}
+		append(&g.waves, WavContents{file_path = e.fullpath})
+		load_wav(&g.waves[index])
+		errs, valid := validate_wav(g.waves[index])
+		if !valid {
+			delete(g.waves[index].samples_raw)
+			log.infof("invalid wav file: %s", e.fullpath)
+			continue // NOTE: continue so the next entry can stay at this index
 
-			load_wav(&wav_registry[e.fullpath])
-			errs, valid := validate_wav(wav_registry[e.fullpath])
-			if !valid {
-				delete_key(&wav_registry, e.fullpath)
-				log.infof("invalid wav file: %s", e.fullpath)
-				// TODO: gracefully handle errors in the wav file, but keep the program running
-				// NOTE: for now, assert and crash
-				//log.assertf(errs.sokol == "", errs.sokol)
-				//log.assertf(errs.frequency == "", errs.frequency)
-				//log.assertf(errs.channels == "", errs.channels)
-			}
+			// TODO: gracefully handle errors in the wav file, but keep the program running
+			// NOTE: for now, assert and crash
+			//log.assertf(errs.sokol == "", errs.sokol)
+			//log.assertf(errs.frequency == "", errs.frequency)
+			//log.assertf(errs.channels == "", errs.channels)
 		}
+
+		index += 1
 	}
 }
 
@@ -451,119 +461,96 @@ frame :: proc "c" () {
 	update_audio(dt)
 }
 
-iteration := 0
-State :: enum {
-	Menu,
-	Player,
-}
-state: State
+_in_bounds :: proc() {
+	if g.playing_index < 0 do g.playing_index = 0
+	if g.playing_index >= len(g.waves) do g.playing_index = len(g.waves) - 1
 
-update_menu_state :: proc(dt: f32) {
-	do_play_audio :: proc() {
-		if iteration < 0 do iteration = 0
-		if iteration >= len(wav_registry) do iteration = len(wav_registry) - 1
-
-		count := 0
-		for filepath, wav in wav_registry {
-			if iteration == count {
-				play_audio(filepath)
-				break
-			}
-			count += 1
-		}
-	}
-
-	// TODO: directional menu navigation
-	if key_down[.H] {
-		iteration -= 1
-		do_play_audio()
-		return
-	} else if key_down[.J] {
-		iteration -= 10
-		do_play_audio()
-		return
-	} else if key_down[.K] {
-		iteration += 10
-		do_play_audio()
-		return
-	} else if key_down[.L] {
-		iteration += 1
-		do_play_audio()
-		return
-	}
-
-}
-
-update_player_state :: proc(dt: f32) {
-	if key_down[.SPACE] {
-		active_wav.is_playing = !active_wav.is_playing
-		return
-	}
-
-	if key_down[.H] {
-		active_wav.sample_idx -= 20000
-		if active_wav.sample_idx < 0 do active_wav.sample_idx = 0
-		return
-	} else if key_down[.J] {
-		active_wav.sample_idx -= 80000
-		if active_wav.sample_idx < 0 do active_wav.sample_idx = 0
-		return
-	} else if key_down[.K] {
-		active_wav.sample_idx += 80000
-		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = len(active_wav.samples_raw) - 40000
-		return
-	} else if key_down[.L] {
-		active_wav.sample_idx += 20000
-		if active_wav.sample_idx > len(active_wav.samples_raw) do active_wav.sample_idx = len(active_wav.samples_raw) - 40000
-		return
-	}
-
+	if g.index < 0 do g.index = 0
+	if g.index >= len(g.waves) do g.index = len(g.waves) - 1
 }
 
 update_state :: proc(dt: f32) {
-	if key_down[.LEFT_CONTROL] && key_down[.H] {
-		state = State.Menu
-	} else if key_down[.LEFT_CONTROL] && key_down[.L] {
-		state = State.Player
+
+	// NOTE: directional menu navigation
+	if key_down[.K] {
+		g.index -= 1
+		_in_bounds()
+	}
+	if key_down[.J] {
+		g.index += 1
+		_in_bounds()
 	}
 
-	switch state {
-	case .Menu:
-		update_menu_state(dt)
-	case .Player:
-		update_player_state(dt)
+	// NOTE: pause or re-start playing
+	if key_down[.SPACE] {
+		g.waves[g.index].is_playing = !g.waves[g.index].is_playing
 	}
 
+	// NOTE: select track
+	if key_down[.ENTER] {
+		if g.playing == nil || g.index != g.playing_index {
+			// NOTE: switching song, unload all other wav files
+			// TODO: sa.shutdown on all?
+			play_audio()
+		}
+	}
+
+	if key_down[.E] {
+		if len(g.playing.samples_raw) >= 44100 {
+			g.playing.samples_raw = g.playing.samples_raw[:g.playing.sample_idx]
+			g.playing.sample_idx -= 44100
+			if g.playing.sample_idx < 0 do g.playing.sample_idx = 0
+			log.debugf("E: samples: %d", len(g.playing.samples_raw))
+			key_down[.E] = false // NOTE: manually disable it so it doesn't keep cutting
+		}
+	}
+	if key_down[.B] {
+		if len(g.playing.samples_raw) >= 44100 {
+			g.playing.samples_raw = g.playing.samples_raw[g.playing.sample_idx:]
+			g.playing.sample_idx = 0
+			log.debugf("B: samples: %d", len(g.playing.samples_raw))
+			key_down[.B] = false // NOTE: manually disable it so it doesn't keep cutting
+		}
+	}
+
+	// NOTE: scan through song
+	if key_down[.H] {
+		g.playing.sample_idx -= (44100 * 2)
+		if g.playing.sample_idx < 0 do g.playing.sample_idx = 0
+	}
+	if key_down[.L] {
+		g.playing.sample_idx += (44100 * 2)
+		if g.playing.sample_idx > len(g.playing.samples_raw) do g.playing.sample_idx = len(g.playing.samples_raw) - 40000
+	}
 
 }
 
 update_audio :: proc(dt: f32) {
-	if active_wav == nil do return
-	if !active_wav.is_playing do return
+	if g.playing == nil do return
+	if !g.playing.is_playing do return
 
 	num_frames := int(sa.expect())
 	if num_frames > 0 {
 		buf := make([]f32, num_frames)
 		frame_loop: for frame in 0 ..< num_frames {
 			log.assertf(
-				active_wav.channels != 0,
+				g.playing.channels != 0,
 				"wav pointers are invalid: channels %d",
-				active_wav.channels,
+				g.playing.channels,
 			)
 
-			for channel in 0 ..< active_wav.channels {
-				if active_wav.sample_idx >= len(active_wav.samples_raw) {
-					active_wav.sample_idx = 0
-					active_wav.is_playing = false
-					continue frame_loop
+			for channel in 0 ..< g.playing.channels {
+				if g.playing.sample_idx >= len(g.playing.samples_raw) {
+					g.playing.sample_idx = 0 // NOTE: loop back to beginning
 				}
 
-				buf[frame] += active_wav.samples_raw[active_wav.sample_idx]
-				active_wav.sample_idx += 1
+				buf[frame] += g.playing.samples_raw[g.playing.sample_idx]
+				g.playing.sample_idx += 1
 			}
 		}
 
 		sa.push(&buf[0], num_frames)
+		// TODO: delete the buffer?
 	}
 }
 
@@ -590,7 +577,6 @@ event :: proc "c" (ev: ^sapp.Event) {
 	}
 
 }
-
 
 cleanup :: proc "c" () {
 	context = default_context
