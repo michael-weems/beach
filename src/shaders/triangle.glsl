@@ -1,4 +1,4 @@
-@header package main
+@header package shaders
 @header import sg "shared:sokol/gfx"
 
 @vs vs

@@ -7,6 +7,7 @@
 - [ ] grapple hook affected by gravity
 - [ ] grapple only to collideable entities
 - [ ] import more sounds from field recorder
+- [ ] improve `standardize` to include converting other formats to wav: `mp4`, `mp3`, `flac`, etc...
 - [ ] 
 
 ## Book takeaways

@@ -6,7 +6,7 @@ for binding in "${shader_bindings[@]}"; do
 	# TODO:
 done
 
-shaders=$(find . -name '*.glsl')
+shaders=$(find ./src -name '*.glsl')
 for shader in "${shaders[@]}"; do
 	name=$(basename -- "$shader" .glsl)
 	dir=$(dirname $shader)
@@ -18,5 +18,5 @@ for shader in "${shaders[@]}"; do
 done
 
 [ -f beach ] && rm beach
-odin build . -debug
-./beach audio
+odin build ./src -debug -out:beach
+./beach ./assets/audio

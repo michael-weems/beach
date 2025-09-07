@@ -1,11 +1,8 @@
 # binary output
 beach
 
-audio/
-
 # generated shader bindings for odin
 *_glsl.odin
 
 # images
 assets/*
-!assets/senjou-starry.png
