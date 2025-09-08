@@ -1,5 +1,8 @@
 package beach
 
+import "./assertprefix"
+import "./audio/wav"
+import "./shaders"
 import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
@@ -12,15 +15,11 @@ import "core:strings"
 import "core:time"
 import sapp "shared:sokol/app"
 import sa "shared:sokol/audio"
+import sdebugtext "shared:sokol/debugtext"
 import sg "shared:sokol/gfx"
 import sgl "shared:sokol/gl"
 import sglue "shared:sokol/glue"
-//import sgp "shared:sokol/gp"
-import "./assertprefix"
-import "./audio/wav"
-import "./shaders"
 import slog "shared:sokol/log"
-import fontstash "vendor:fontstash"
 import stbi "vendor:stb/image"
 
 default_context: runtime.Context
@@ -32,10 +31,9 @@ Vec4 :: [4]f32
 Mat3 :: matrix[3, 3]f32
 Mat4 :: matrix[4, 4]f32
 
-Vertex :: struct {
-	pos:   Vec3,
-	color: sg.Color,
-	uv:    Vec2,
+Vertex :: struct #packed {
+	x, y, z: f32,
+	u, v:    u16,
 }
 
 GuiElement :: enum {
@@ -51,10 +49,10 @@ Entity :: struct {
 	geometry: []Vec3,
 }
 
-VertexMeta :: struct {
-	vertex_buffer_offset: i32,
-	index_buffer_offset:  i32,
-	draw_vertices:        int,
+FilePass :: struct {
+	ctx:   sdebugtext.Context,
+	image: sg.Image,
+	pass:  sg.Pass,
 }
 
 Graphics :: struct {
@@ -62,16 +60,10 @@ Graphics :: struct {
 	pipeline:    sg.Pipeline,
 	bindings:    sg.Bindings,
 	pass_action: sg.Pass_Action,
+	file_pass:   FilePass,
+	smp:         sg.Sampler,
 	camera:      Entity,
 	entities:    [dynamic]Entity,
-	entity_meta: [GuiElement]VertexMeta,
-	palette:     [NUM_FONTS]Color,
-}
-
-Font :: struct {
-	id:        int,
-	ctx:       fontstash.FontContext,
-	dpi_scale: f32,
 }
 
 Globals :: struct {
@@ -80,9 +72,59 @@ Globals :: struct {
 	playing_index: int,
 	index:         int,
 	gui:           Graphics,
-	font:          Font,
+	rx:            f32,
+	ry:            f32,
+	img:           sg.Image,
 }
 g: ^Globals
+
+ColorKey :: enum {
+	BASE,
+	SURFACE,
+	OVERLAY,
+	MUTED,
+	SUBTLE,
+	TEXT,
+	DEBUG_TEXT,
+	HIGHLIGHT_LOW,
+	HIGHLIGHT_MED,
+	HIGHLIGHT_HIGH,
+}
+
+MAX_RENDERS :: 1
+
+ColorTheme :: [ColorKey]sg.Color {
+	// NOTE: for now based on rose-pine ish theme, make this adaptable via theme file
+	.BASE           = {25, 23, 36, 242},
+	.SURFACE        = {31, 29, 46, 255},
+	.OVERLAY        = {38, 35, 58, 255},
+	.MUTED          = {110, 106, 134, 255},
+	.SUBTLE         = {144, 140, 170, 255},
+	.TEXT           = {224, 222, 244, 255},
+	.DEBUG_TEXT     = {156, 207, 217, 255},
+	.HIGHLIGHT_LOW  = {33, 32, 46, 255},
+	.HIGHLIGHT_MED  = {64, 61, 82, 255},
+	.HIGHLIGHT_HIGH = {82, 79, 103, 242},
+}
+
+/*
+	NOTE: rose-pine
+    base: #191724F2; /* App Frames, sidebars, tabs */
+    surface: #1f1d2e;/* cards, inputs, status lines */
+    overlay: #26233a80;/* popovers, notifications, dialogs */
+    muted: #6e6a86;/* diabled elements, unfocused text */
+    subtle: #908caa;/* comments, punctuation, tab names */
+    text: #e0def4;/* normal text, variables, active content */
+    love: #eb6f92;/* diagnostic errors, deleted git files, terminal red, bright red */
+    gold: #f6c177;/* diagnostic warnings, terminal yellow, bright yellow */
+    rose: #ebbcba;/* matching search background paired with base foreground, modified git files, terminal cyan, bright cyan */
+    pine: #31748f;/* renamed git files, terminal green, bright green */
+    foam: #9ccfd8;/* diagnostic information, git additions, terminal blue, bright blue */
+    iris: #c4a7e7;/* diagnostic hints, inline links, merged and staged git modifications, terminal magenta, bright magenta */
+    highlight-low: #21202e;/* cursorline background */
+    highlight-med: #403d52;/* selection background paired with text foreground */
+    highlight-high: #524f67F2;/* borders / visual dividers, cursor background paired with text foreground */
+*/
 
 play_audio :: proc() {
 	if g.playing != nil do sa.shutdown()
@@ -118,6 +160,7 @@ init :: proc "c" () {
 	g = new(Globals)
 	load_dir(process_input.audio_dir)
 	init_gui()
+	g.img = load_image("./assets/senjou-starry.png")
 	play_audio()
 }
 
@@ -203,14 +246,6 @@ sg_range_from_slice :: proc(s: []$T) -> sg.Range {
 	return {ptr = raw_data(s), size = len(s) * size_of(s[0])}
 }
 
-FONT_KC854 :: 0
-FONT_C64 :: 1
-FONT_ORIC :: 2
-NUM_FONTS :: 3
-
-Color :: struct {
-	r, g, b: u8,
-}
 
 /*
 	// NOTE: example for how to draw a line using sokol_gl
@@ -241,55 +276,48 @@ pow :: proc(x, power: int) -> int {
 }
 
 init_gui :: proc() {
-	g.font.dpi_scale = sapp.dpi_scale()
+
 
 	sg.setup({environment = sglue.environment(), logger = {func = slog.func}})
 	log.assert(sg.isvalid(), "sokol graphics setup is not valid")
 
-	sgl.setup({logger = {func = slog.func}})
-
-	atlas_dim := pow(100 * int(g.font.dpi_scale), 2)
-	log.assertf(atlas_dim > 0, "atlas_dim <= 0: %d", atlas_dim)
-	//log.assertf(atlas_dim == 262144, "unexpected atlas_dim: %d", atlas_dim)
-	log.assertf(atlas_dim == 10000, "unexpected atlas_dim: %d", atlas_dim)
-	fontstash.Init(&g.font.ctx, atlas_dim, atlas_dim, .TOPLEFT)
-	g.font.id = fontstash.AddFont(
-		&g.font.ctx,
-		"calligraphic",
-		"assets/fonts/DuctusCalligraphic.ttf",
+	sdebugtext.setup(
+		{
+			fonts = {
+				sdebugtext.font_kc853(),
+				sdebugtext.font_kc854(),
+				sdebugtext.font_z1013(),
+				sdebugtext.font_cpc(),
+				sdebugtext.font_c64(),
+				sdebugtext.font_oric(),
+				sdebugtext.font_oric(), // TODO: ???
+				sdebugtext.font_oric(), // TODO: ???
+			},
+			logger = {func = slog.func},
+		},
 	)
+
+	sgl.setup({logger = {func = slog.func}})
 
 	sapp.show_mouse(false)
 	sapp.lock_mouse(true)
 
 	g.gui.camera = {
-		pos    = {0, 0, 2},
-		target = {0, 0, 1},
+		pos    = {0, -5, 0},
+		target = {0, 5, 0},
 	}
-
-	WHITE :: sg.Color{1, 1, 1, 1}
-	RED :: sg.Color{1, 0, 0, 1}
-	BLUE :: sg.Color{0, 0, 1, 1}
-	PURP :: sg.Color{1, 0, 1, 1}
 	
 	// odinfmt: disable
 	indices := []u16 {
-		// file entry
-		0, 1, 2, 2, 1, 3,
+		 0,  1,  2,   0,  2,  3,
 	}
 	g.gui.vertices = []Vertex {
-		// file entry
-		{pos = {-0.5, -0.5, 0.0}, color = WHITE, uv = {0, 0}},
-		{pos = {0.5, -0.5, 0.0}, color = RED, uv = {1, 0}},
-		{pos = {-0.5, 0.5, 0.0}, color = BLUE, uv = {0, 1}},
-		{pos = {0.5, 0.5, 0.0}, color = PURP, uv = {1, 1}},
+		{ -1.0, -1.0, -1.0,  0, 0 },
+		{  1.0, -1.0, -1.0,  1, 0 },
+		{  1.0,  1.0, -1.0,  1, 1 },
+		{ -1.0,  1.0, -1.0,  0, 1 },
 	}
 	// odinfmt: enable
-	g.gui.entity_meta[.FILE_ENTRY] = VertexMeta {
-		vertex_buffer_offset = 0 * size_of(Vertex),
-		index_buffer_offset  = 0 * size_of(u16),
-		draw_vertices        = 6,
-	}
 
 	g.gui.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.gui.vertices)})
 
@@ -300,40 +328,165 @@ init_gui :: proc() {
 	// create a shader and pipeline object (default render states are fine for triangle)
 	g.gui.pipeline = sg.make_pipeline(
 		{
-			shader = sg.make_shader(shaders.triangle_shader_desc(sg.query_backend())),
-			index_type = .UINT16,
 			layout = {
 				attrs = {
-					shaders.ATTR_triangle_position = {format = .FLOAT2},
-					shaders.ATTR_triangle_color0 = {format = .FLOAT3},
+					shaders.ATTR_debugtext_context_pos = {format = .FLOAT3},
+					shaders.ATTR_debugtext_context_texcoord0 = {format = .SHORT2N},
 				},
 			},
+			shader = sg.make_shader(shaders.debugtext_context_shader_desc(sg.query_backend())),
+			index_type = .UINT16,
+			cull_mode = .BACK,
+			depth = {compare = .LESS_EQUAL, write_enabled = true},
 		},
 	)
 
 	// a pass action to clear framebuffer to black
 	g.gui.pass_action = {
-		colors = {0 = {load_action = .CLEAR, clear_value = {r = 0.4, g = 0.2, b = 0.7, a = 1}}},
+		colors = {
+			0 = {load_action = .CLEAR, clear_value = convert_to_sokol_rgb(ColorTheme[.BASE])},
+		},
 	}
-	
-	//odinfmt: disable
-	g.gui.palette = {
-			{ 0xf4, 0x43, 0x36 },
-			{ 0x21, 0x96, 0xf3 },
-			{ 0x4c, 0xaf, 0x50 },
-	}
-	//odinfmt: enable
 
+
+	g.gui.file_pass.ctx = sdebugtext.make_context(
+		{
+			char_buf_size = 64,
+			canvas_width = 32,
+			canvas_height = 16,
+			color_format = .RGBA8,
+			depth_format = .NONE,
+			sample_count = 1,
+		},
+	)
+
+
+	img := sg.make_image(
+		{
+			usage = {render_attachment = true},
+			width = 32,
+			height = 32,
+			pixel_format = .RGBA8,
+			sample_count = 1,
+		},
+	)
+	g.gui.file_pass.image = img
+
+	g.gui.file_pass.pass = sg.Pass {
+		attachments = sg.make_attachments({colors = {0 = {image = img}}}),
+		// NOTE: this *should* set the background color for the part the text will show up on
+		// TODO: change this to .SURFACE or .OVERLAY
+		action = {colors = {0 = {load_action = .CLEAR, clear_value = ColorTheme[.DEBUG_TEXT]}}},
+	}
+
+	g.gui.smp = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
+}
+
+convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
+	return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
+}
+
+compute_vs_params :: proc(w: i32, h: i32) -> shaders.Vs_Params {
+	p := linalg.matrix4_perspective_f32(f32(linalg.to_radians(60.0)), f32(w) / f32(h), 0.01, 10.0)
+	v := linalg.matrix4_look_at_f32(Vec3{0.0, 1.5, 4.0}, Vec3{0.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0})
+
+	rxm := linalg.matrix4_rotate_f32(linalg.to_radians(g.rx), Vec3{1, 1, 1})
+	rym := linalg.matrix4_rotate_f32(linalg.to_radians(g.ry), Vec3{1, 1, 1})
+	m := rym * rxm
+	vs_params := shaders.Vs_Params {
+		mvp = p * v * m,
+	}
+	return vs_params
+}
+
+load_image :: proc(filename: cstring) -> sg.Image {
+	w, h: i32
+	pixels := stbi.load(filename, &w, &h, nil, 4)
+	assert(pixels != nil)
+
+	image := sg.make_image(
+	{
+		width = w,
+		height = h,
+		pixel_format = .RGBA8,
+		data = {
+			subimage = {
+				0 = {
+					0 = {
+						ptr  = pixels,
+						size = uint(w * h * 4), // 4 bytes per pixel
+					},
+				},
+			},
+		},
+	},
+	)
+	stbi.image_free(pixels)
+
+	return image
 }
 
 update_gui :: proc(dt: f32) {
 
+	disp_width := sapp.width()
+	disp_height := sapp.height()
+
+	g.rx += 0.25 * dt
+	g.ry += 0.25 * dt
+	vs_params := compute_vs_params(disp_width, disp_height)
+
+	sdebugtext.set_context(sdebugtext.default_context())
+	sdebugtext.canvas(f32(disp_width) * 0.5, f32(disp_height) * 0.5)
+
+	c := convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
+	sdebugtext.font(5)
+	sdebugtext.color4f(c.r, c.g, c.b, c.a)
+	sdebugtext.origin(1, 1)
+	sdebugtext.puts("DEBUG\n")
+	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
+	sdebugtext.printf("%v\n", vs_params)
+
+	// NOTE: render file font
+	sg.begin_pass(g.gui.file_pass.pass)
+	sdebugtext.set_context(g.gui.file_pass.ctx)
+
+	sdebugtext.origin(0.1, 0.1)
+	sdebugtext.font(5)
+	c = convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
+	sdebugtext.color4f(c.r, c.g, c.b, c.a)
+	//sdebugtext.printf("%s\n", g.waves[0].file_path)
+	sdebugtext.printf("ye")
+
+	sdebugtext.draw()
+	sg.end_pass()
+	// NOTE: END render file font
+
+
+	// NOTE: render geometry
 	sg.begin_pass({action = g.gui.pass_action, swapchain = sglue.swapchain()})
 	sg.apply_pipeline(g.gui.pipeline)
-	binding := g.gui.bindings
+
+	sg.apply_bindings(
+		{
+			images = {shaders.IMG_tex = g.img},
+			vertex_buffers = g.gui.bindings.vertex_buffers,
+			index_buffer = g.gui.bindings.index_buffer,
+			samplers = {shaders.SMP_smp = g.gui.smp},
+		},
+	)
+	sg.apply_uniforms(shaders.UB_vs_params, sg_range(&vs_params))
+	sg.draw(0, 6, 1)
+
+	sdebugtext.set_context(sdebugtext.default_context())
+	sdebugtext.draw()
+	sg.end_pass()
+	sg.commit()
+	// NOTE: END render geometry
 
 
 	// NOTE: loop through entities
+	/* 
+	NOTE: move above into some sort of entity system?
 	for entity in g.gui.entities {
 		switch entity.kind {
 		case .FILE_ENTRY:
@@ -355,10 +508,7 @@ update_gui :: proc(dt: f32) {
 			sg.draw(0, meta.draw_vertices, 1)
 		}
 	}
-
-	sgl.draw()
-	sg.end_pass()
-	sg.commit()
+	*/
 }
 
 _in_bounds :: proc() {
@@ -497,7 +647,7 @@ event :: proc "c" (ev: ^sapp.Event) {
 
 cleanup :: proc "c" () {
 	context = default_context
-	fontstash.Destroy(&g.font.ctx)
+	sdebugtext.shutdown()
 	sa.shutdown()
 	sg.shutdown()
 }
@@ -514,11 +664,12 @@ main :: proc() {
 
 	process_input = new(ProcessInput)
 
-	process_input.audio_dir = os.args[1]
-	log.assertf(
-		process_input.audio_dir != "",
-		"bad input: must provide <wav-file-directory> as first positional argument",
-	)
+	// NOTE: default to current working directory
+	if len(os.args) == 1 do process_input.audio_dir = "."
+	else {
+		process_input.audio_dir = os.args[1]
+		log.assertf(process_input.audio_dir != "", "bad input: must provide <wav-file-directory> as first positional argument")
+	}
 
 	sapp.run(
 		{
@@ -526,6 +677,7 @@ main :: proc() {
 			frame_cb = frame,
 			event_cb = event,
 			cleanup_cb = cleanup,
+			sample_count = 4,
 			width = 1920,
 			height = 1080,
 			window_title = "triangle",
