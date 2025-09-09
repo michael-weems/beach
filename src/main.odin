@@ -31,9 +31,10 @@ Vec4 :: [4]f32
 Mat3 :: matrix[3, 3]f32
 Mat4 :: matrix[4, 4]f32
 
-Vertex :: struct #packed {
-	x, y, z: f32,
-	u, v:    u16,
+Vertex :: struct {
+	pos:   Vec3,
+	color: sg.Color,
+	uv:    Vec2,
 }
 
 GuiElement :: enum {
@@ -49,34 +50,27 @@ Entity :: struct {
 	geometry: []Vec3,
 }
 
-FilePass :: struct {
-	ctx:   sdebugtext.Context,
-	image: sg.Image,
-	pass:  sg.Pass,
-}
-
-Graphics :: struct {
-	vertices:    []Vertex,
-	pipeline:    sg.Pipeline,
-	bindings:    sg.Bindings,
-	pass_action: sg.Pass_Action,
-	file_pass:   FilePass,
-	smp:         sg.Sampler,
-	camera:      Entity,
-	entities:    [dynamic]Entity,
-}
-
 Globals :: struct {
-	waves:         [dynamic]wav.Contents,
-	playing:       ^wav.Contents,
-	playing_index: int,
-	index:         int,
-	gui:           Graphics,
-	rx:            f32,
-	ry:            f32,
-	img:           sg.Image,
+	waves:           [dynamic]wav.Contents,
+	entities:        [dynamic]Entity,
+	playing:         ^wav.Contents,
+	playing_index:   int,
+	index:           int,
+	image:           sg.Image,
+	vertices:        []Vertex,
+	pipeline:        sg.Pipeline,
+	bindings:        sg.Bindings,
+	pass_action:     sg.Pass_Action,
+	sampler:         sg.Sampler,
+	debugtext_ctx:   sdebugtext.Context,
+	debugtext_image: sg.Image,
+	debugtext_pass:  sg.Pass,
 }
 g: ^Globals
+
+convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
+	return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
+}
 
 ColorKey :: enum {
 	BASE,
@@ -90,8 +84,6 @@ ColorKey :: enum {
 	HIGHLIGHT_MED,
 	HIGHLIGHT_HIGH,
 }
-
-MAX_RENDERS :: 1
 
 ColorTheme :: [ColorKey]sg.Color {
 	// NOTE: for now based on rose-pine ish theme, make this adaptable via theme file
@@ -153,17 +145,6 @@ play_audio :: proc() {
 	)
 }
 
-
-init :: proc "c" () {
-	context = default_context
-
-	g = new(Globals)
-	load_dir(process_input.audio_dir)
-	init_gui()
-	g.img = load_image("./assets/senjou-starry.png")
-	play_audio()
-}
-
 FileEntry :: struct {
 	label:        string,
 	wav_index:    int,
@@ -212,10 +193,20 @@ load_dir :: proc(dir: string) {
 			//log.assertf(errs.channels == "", errs.channels)
 		}
 
-		append(&g.gui.entities, make_file_entry(index))
+		append(&g.entities, make_file_entry(index))
 
 		index += 1
 	}
+}
+
+init :: proc "c" () {
+	context = default_context
+
+	g = new(Globals)
+	load_dir(process_input.audio_dir)
+	init_gui()
+	g.image = load_image("./assets/senjou-starry.png")
+	play_audio()
 }
 
 frame :: proc "c" () {
@@ -228,12 +219,6 @@ frame :: proc "c" () {
 	update_audio(dt)
 }
 
-Bindable :: struct {
-	vertices:    []Vertex,
-	bind:        sg.Bindings,
-	pipeline:    sg.Pipeline,
-	pass_action: sg.Pass_Action,
-}
 sg_range :: proc {
 	sg_range_from_struct,
 	sg_range_from_slice,
@@ -302,54 +287,67 @@ init_gui :: proc() {
 	sapp.show_mouse(false)
 	sapp.lock_mouse(true)
 
-	g.gui.camera = {
-		pos    = {0, -5, 0},
-		target = {0, 5, 0},
+	WHITE :: sg.Color{1, 1, 1, 1}
+	RED :: sg.Color{1, 0, 0, 1}
+	BLUE :: sg.Color{0, 0, 1, 1}
+	PURP :: sg.Color{1, 0, 1, 1}
+
+	// a vertex buffer with 3 vertices
+	g.vertices = []Vertex {
+		{pos = {-0.5, -0.5, 0.0}, color = WHITE, uv = {0, 0}},
+		{pos = {0.5, -0.5, 0.0}, color = RED, uv = {1, 0}},
+		{pos = {-0.5, 0.5, 0.0}, color = BLUE, uv = {0, 1}},
+		{pos = {0.5, 0.5, 0.0}, color = PURP, uv = {1, 1}},
 	}
+
+	g.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices)})
 	
 	// odinfmt: disable
 	indices := []u16 {
-		 0,  1,  2,   0,  2,  3,
-	}
-	g.gui.vertices = []Vertex {
-		{ -1.0, -1.0, -1.0,  0, 0 },
-		{  1.0, -1.0, -1.0,  1, 0 },
-		{  1.0,  1.0, -1.0,  1, 1 },
-		{ -1.0,  1.0, -1.0,  0, 1 },
+		0, 1, 2,
+		2, 1, 3,
 	}
 	// odinfmt: enable
-
-	g.gui.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.gui.vertices)})
-
-	g.gui.bindings.index_buffer = sg.make_buffer(
+	g.bindings.index_buffer = sg.make_buffer(
 		{usage = {index_buffer = true}, data = sg_range(indices)},
 	)
 
+	g.bindings.images = {
+		shaders.IMG_tex = g.image, // TODO: make this a texture option somehow?
+	}
+
+	g.sampler = sg.make_sampler({})
+	g.bindings.samplers = {
+		shaders.SMP_smp = g.sampler,
+	}
+
 	// create a shader and pipeline object (default render states are fine for triangle)
-	g.gui.pipeline = sg.make_pipeline(
+	g.pipeline = sg.make_pipeline(
 		{
+			shader = sg.make_shader(shaders.triangle_shader_desc(sg.query_backend())),
+			index_type = .UINT16,
+			depth = {
+				write_enabled = true, // always write to depth buffer
+				compare       = .LESS_EQUAL, // don't render objects behind objects in view
+			},
 			layout = {
 				attrs = {
-					shaders.ATTR_debugtext_context_pos = {format = .FLOAT3},
-					shaders.ATTR_debugtext_context_texcoord0 = {format = .SHORT2N},
+					shaders.ATTR_triangle_position = {format = .FLOAT3},
+					shaders.ATTR_triangle_color0 = {format = .FLOAT4},
+					shaders.ATTR_triangle_uv = {format = .FLOAT2},
 				},
 			},
-			shader = sg.make_shader(shaders.debugtext_context_shader_desc(sg.query_backend())),
-			index_type = .UINT16,
-			cull_mode = .BACK,
-			depth = {compare = .LESS_EQUAL, write_enabled = true},
 		},
 	)
 
 	// a pass action to clear framebuffer to black
-	g.gui.pass_action = {
+	g.pass_action = {
 		colors = {
 			0 = {load_action = .CLEAR, clear_value = convert_to_sokol_rgb(ColorTheme[.BASE])},
 		},
 	}
 
-
-	g.gui.file_pass.ctx = sdebugtext.make_context(
+	g.debugtext_ctx = sdebugtext.make_context(
 		{
 			char_buf_size = 64,
 			canvas_width = 32,
@@ -360,8 +358,7 @@ init_gui :: proc() {
 		},
 	)
 
-
-	img := sg.make_image(
+	g.debugtext_image = sg.make_image(
 		{
 			usage = {render_attachment = true},
 			width = 32,
@@ -370,29 +367,31 @@ init_gui :: proc() {
 			sample_count = 1,
 		},
 	)
-	g.gui.file_pass.image = img
 
-	g.gui.file_pass.pass = sg.Pass {
-		attachments = sg.make_attachments({colors = {0 = {image = img}}}),
+	g.debugtext_pass = sg.Pass {
+		attachments = sg.make_attachments({colors = {0 = {image = g.debugtext_image}}}),
 		// NOTE: this *should* set the background color for the part the text will show up on
 		// TODO: change this to .SURFACE or .OVERLAY
 		action = {colors = {0 = {load_action = .CLEAR, clear_value = ColorTheme[.DEBUG_TEXT]}}},
 	}
 
-	g.gui.smp = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
+	g.sampler = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
 }
 
-convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
-	return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
-}
+compute_mvp :: proc(w: i32, h: i32) -> shaders.Vs_Params {
+	p := linalg.matrix4_perspective_f32(70, sapp.widthf() / sapp.heightf(), 0.0001, 1000)
+	//v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
+	v := linalg.matrix4_look_at_f32(Vec3{0.0, 0.0, 0.0}, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0})
 
-compute_vs_params :: proc(w: i32, h: i32) -> shaders.Vs_Params {
-	p := linalg.matrix4_perspective_f32(f32(linalg.to_radians(60.0)), f32(w) / f32(h), 0.01, 10.0)
-	v := linalg.matrix4_look_at_f32(Vec3{0.0, 1.5, 4.0}, Vec3{0.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0})
+	m :=
+		linalg.matrix4_translate_f32(Vec3{1, 0, 0}) *
+		linalg.matrix4_scale_f32(Vec3{1, 1, 1}) *
+		linalg.matrix4_from_yaw_pitch_roll_f32(
+			linalg.to_radians(f32(90.0)),
+			linalg.to_radians(f32(180.0)),
+			linalg.to_radians(f32(0.0)),
+		)
 
-	rxm := linalg.matrix4_rotate_f32(linalg.to_radians(g.rx), Vec3{1, 1, 1})
-	rym := linalg.matrix4_rotate_f32(linalg.to_radians(g.ry), Vec3{1, 1, 1})
-	m := rym * rxm
 	vs_params := shaders.Vs_Params {
 		mvp = p * v * m,
 	}
@@ -431,9 +430,7 @@ update_gui :: proc(dt: f32) {
 	disp_width := sapp.width()
 	disp_height := sapp.height()
 
-	g.rx += 0.25 * dt
-	g.ry += 0.25 * dt
-	vs_params := compute_vs_params(disp_width, disp_height)
+	mvp := compute_mvp(disp_width, disp_height)
 
 	sdebugtext.set_context(sdebugtext.default_context())
 	sdebugtext.canvas(f32(disp_width) * 0.5, f32(disp_height) * 0.5)
@@ -444,11 +441,10 @@ update_gui :: proc(dt: f32) {
 	sdebugtext.origin(1, 1)
 	sdebugtext.puts("DEBUG\n")
 	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
-	sdebugtext.printf("%v\n", vs_params)
 
 	// NOTE: render file font
-	sg.begin_pass(g.gui.file_pass.pass)
-	sdebugtext.set_context(g.gui.file_pass.ctx)
+	sg.begin_pass(g.debugtext_pass)
+	sdebugtext.set_context(g.debugtext_ctx)
 
 	sdebugtext.origin(0.1, 0.1)
 	sdebugtext.font(5)
@@ -461,20 +457,19 @@ update_gui :: proc(dt: f32) {
 	sg.end_pass()
 	// NOTE: END render file font
 
-
 	// NOTE: render geometry
-	sg.begin_pass({action = g.gui.pass_action, swapchain = sglue.swapchain()})
-	sg.apply_pipeline(g.gui.pipeline)
+	sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
+	sg.apply_pipeline(g.pipeline)
 
 	sg.apply_bindings(
 		{
-			images = {shaders.IMG_tex = g.img},
-			vertex_buffers = g.gui.bindings.vertex_buffers,
-			index_buffer = g.gui.bindings.index_buffer,
-			samplers = {shaders.SMP_smp = g.gui.smp},
+			images = {shaders.IMG_tex = g.debugtext_image},
+			vertex_buffers = g.bindings.vertex_buffers,
+			index_buffer = g.bindings.index_buffer,
+			samplers = {shaders.SMP_smp = g.sampler},
 		},
 	)
-	sg.apply_uniforms(shaders.UB_vs_params, sg_range(&vs_params))
+	sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
 	sg.draw(0, 6, 1)
 
 	sdebugtext.set_context(sdebugtext.default_context())
@@ -483,32 +478,6 @@ update_gui :: proc(dt: f32) {
 	sg.commit()
 	// NOTE: END render geometry
 
-
-	// NOTE: loop through entities
-	/* 
-	NOTE: move above into some sort of entity system?
-	for entity in g.gui.entities {
-		switch entity.kind {
-		case .FILE_ENTRY:
-			m :=
-				linalg.matrix4_translate_f32(entity.pos) *
-				linalg.matrix4_from_yaw_pitch_roll_f32(
-					linalg.to_radians(entity.rot.y),
-					linalg.to_radians(entity.rot.x),
-					linalg.to_radians(entity.rot.z),
-				) *
-				linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {1, 0, 0})
-
-			meta := g.gui.entity_meta[.FILE_ENTRY]
-			log.assertf(meta.draw_vertices > 0, "g.gui.entity_meta[.FILE_ENTRY] does not exist")
-
-			binding.vertex_buffer_offsets[0] = meta.vertex_buffer_offset
-			binding.index_buffer_offset = meta.index_buffer_offset
-			sg.apply_bindings(binding)
-			sg.draw(0, meta.draw_vertices, 1)
-		}
-	}
-	*/
 }
 
 _in_bounds :: proc() {
