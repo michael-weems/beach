@@ -287,17 +287,14 @@ init_gui :: proc() {
 	sapp.show_mouse(false)
 	sapp.lock_mouse(true)
 
-	WHITE :: sg.Color{1, 1, 1, 1}
-	RED :: sg.Color{1, 0, 0, 1}
-	BLUE :: sg.Color{0, 0, 1, 1}
-	PURP :: sg.Color{1, 0, 1, 1}
+	_color := convert_to_sokol_rgb(ColorTheme[.OVERLAY])
 
 	// a vertex buffer with 3 vertices
 	g.vertices = []Vertex {
-		{pos = {-0.5, -0.5, 0.0}, color = WHITE, uv = {0, 0}},
-		{pos = {0.5, -0.5, 0.0}, color = RED, uv = {1, 0}},
-		{pos = {-0.5, 0.5, 0.0}, color = BLUE, uv = {0, 1}},
-		{pos = {0.5, 0.5, 0.0}, color = PURP, uv = {1, 1}},
+		{pos = {-6.0, -1.0, 0.0}, color = _color, uv = {0, 0}},
+		{pos = {6.0, -1.0, 0.0}, color = _color, uv = {1, 0}},
+		{pos = {-6.0, 1.0, 0.0}, color = _color, uv = {0, 1}},
+		{pos = {6.0, 1.0, 0.0}, color = _color, uv = {1, 1}},
 	}
 
 	g.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices)})
@@ -378,22 +375,27 @@ init_gui :: proc() {
 	g.sampler = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
 }
 
+//v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
+view_matrix := linalg.matrix4_look_at_f32(
+	Vec3{0.0, 0.0, 0.0},
+	Vec3{1.0, 0.0, 0.0},
+	Vec3{0.0, 1.0, 0.0},
+)
+
+model_matrix :=
+	linalg.matrix4_translate_f32(Vec3{10, 0, 0}) *
+	linalg.matrix4_scale_f32(Vec3{0.1, 1, 1}) *
+	linalg.matrix4_from_yaw_pitch_roll_f32(
+		linalg.to_radians(f32(270.0)),
+		linalg.to_radians(f32(0.0)),
+		linalg.to_radians(f32(0.0)),
+	)
+
 compute_mvp :: proc(w: i32, h: i32) -> shaders.Vs_Params {
 	p := linalg.matrix4_perspective_f32(70, sapp.widthf() / sapp.heightf(), 0.0001, 1000)
-	//v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
-	v := linalg.matrix4_look_at_f32(Vec3{0.0, 0.0, 0.0}, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0})
-
-	m :=
-		linalg.matrix4_translate_f32(Vec3{1, 0, 0}) *
-		linalg.matrix4_scale_f32(Vec3{1, 1, 1}) *
-		linalg.matrix4_from_yaw_pitch_roll_f32(
-			linalg.to_radians(f32(90.0)),
-			linalg.to_radians(f32(180.0)),
-			linalg.to_radians(f32(0.0)),
-		)
 
 	vs_params := shaders.Vs_Params {
-		mvp = p * v * m,
+		mvp = p * view_matrix * model_matrix,
 	}
 	return vs_params
 }
@@ -439,19 +441,20 @@ update_gui :: proc(dt: f32) {
 	sdebugtext.font(5)
 	sdebugtext.color4f(c.r, c.g, c.b, c.a)
 	sdebugtext.origin(1, 1)
-	sdebugtext.puts("DEBUG\n")
+	sdebugtext.printf("File:     %s\n", g.playing.file_path)
+	sdebugtext.printf("Duration: %s\n", wav.time_string(g.playing.time))
 	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
 
 	// NOTE: render file font
 	sg.begin_pass(g.debugtext_pass)
 	sdebugtext.set_context(g.debugtext_ctx)
 
-	sdebugtext.origin(0.1, 0.1)
+	sdebugtext.origin(0, 0.5)
 	sdebugtext.font(5)
 	c = convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
 	sdebugtext.color4f(c.r, c.g, c.b, c.a)
 	//sdebugtext.printf("%s\n", g.waves[0].file_path)
-	sdebugtext.printf("ye")
+	sdebugtext.printf("hi")
 
 	sdebugtext.draw()
 	sg.end_pass()
