@@ -11,6 +11,7 @@ import "core:math"
 import "core:math/fixed"
 import "core:math/linalg"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:time"
 import sapp "shared:sokol/app"
@@ -37,17 +38,13 @@ Vertex :: struct {
 	uv:    Vec2,
 }
 
-GuiElement :: enum {
+EntityKind :: enum {
 	FILE_ENTRY,
 }
 
 Entity :: struct {
-	kind:     GuiElement,
-	pos:      Vec3,
-	rot:      Vec3,
-	target:   Vec3,
-	look:     Vec2,
-	geometry: []Vec3,
+	kind: EntityKind,
+	pos:  Vec3,
 }
 
 Globals :: struct {
@@ -67,6 +64,8 @@ Globals :: struct {
 	debugtext_pass:  sg.Pass,
 }
 g: ^Globals
+
+DEPTH_UI :: 6
 
 convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
 	return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
@@ -146,7 +145,7 @@ play_audio :: proc() {
 }
 
 FileEntry :: struct {
-	label:        string,
+	file_name:    string,
 	wav_index:    int,
 	using entity: Entity,
 }
@@ -154,10 +153,9 @@ FileEntry :: struct {
 make_file_entry :: proc(wav_index: int) -> FileEntry {
 	return {
 		kind = .FILE_ENTRY,
-		label = g.waves[wav_index].file_path,
+		pos = Vec3{6, 0, 0},
 		wav_index = wav_index,
-		pos = Vec3{0, f32(wav_index), 0},
-		rot = Vec3{0, 0, 0},
+		file_name = filepath.short_stem(g.waves[wav_index].file_path),
 	}
 }
 
@@ -167,6 +165,7 @@ load_dir :: proc(dir: string) {
 
 	entries, read_err := os.read_dir(fd, 1000)
 	log.assertf(read_err == nil, "read dir: %s: %v", dir, read_err)
+	log.assertf(len(entries) > 0, "no files found in dir: %s: %v", dir, read_err)
 
 	num_entries := len(entries)
 
@@ -193,10 +192,11 @@ load_dir :: proc(dir: string) {
 			//log.assertf(errs.channels == "", errs.channels)
 		}
 
-		append(&g.entities, make_file_entry(index))
-
 		index += 1
 	}
+	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s: %v", dir, read_err)
+
+	append(&g.entities, make_file_entry(0))
 }
 
 init :: proc "c" () {
@@ -290,11 +290,14 @@ init_gui :: proc() {
 	_color := convert_to_sokol_rgb(ColorTheme[.OVERLAY])
 
 	// a vertex buffer with 3 vertices
+
+	// TODO: how does uv work here?
+
 	g.vertices = []Vertex {
-		{pos = {-6.0, -1.0, 0.0}, color = _color, uv = {0, 0}},
-		{pos = {6.0, -1.0, 0.0}, color = _color, uv = {1, 0}},
-		{pos = {-6.0, 1.0, 0.0}, color = _color, uv = {0, 1}},
-		{pos = {6.0, 1.0, 0.0}, color = _color, uv = {1, 1}},
+		{pos = {-1.0, -0.2, 0.0}, color = _color, uv = {0, 0}},
+		{pos = {1.0, -0.2, 0.0}, color = _color, uv = {1, 0}},
+		{pos = {-1.0, 0.2, 0.0}, color = _color, uv = {0, 1}},
+		{pos = {1.0, 0.2, 0.0}, color = _color, uv = {1, 1}},
 	}
 
 	g.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices)})
@@ -392,7 +395,7 @@ model_matrix :=
 	)
 
 compute_mvp :: proc(w: i32, h: i32) -> shaders.Vs_Params {
-	p := linalg.matrix4_perspective_f32(70, sapp.widthf() / sapp.heightf(), 0.0001, 1000)
+	p := linalg.matrix4_perspective_f32(70, sapp.widthf() / sapp.heightf(), 5, 15)
 
 	vs_params := shaders.Vs_Params {
 		mvp = p * view_matrix * model_matrix,
@@ -574,6 +577,7 @@ process_user_input :: proc(dt: f32) {
 
 }
 
+// TODO: this slow. we don't need it to be fast (yet). but we're getting < 60fps and this is most likely the cause. For this app, we don't need more than 30fps (probably). But I'd like to get it >60fps, >120fps if possible
 update_audio :: proc(dt: f32) {
 	if g.playing == nil do return
 	if !g.playing.is_playing do return
