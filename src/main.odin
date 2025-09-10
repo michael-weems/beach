@@ -40,6 +40,7 @@ Vertex :: struct {
 
 EntityKind :: enum {
 	FILE_ENTRY,
+	CAMERA,
 }
 
 Entity :: struct {
@@ -62,6 +63,7 @@ Globals :: struct {
 	debugtext_ctx:   sdebugtext.Context,
 	debugtext_image: sg.Image,
 	debugtext_pass:  sg.Pass,
+	camera:          Entity,
 }
 g: ^Globals
 
@@ -161,9 +163,11 @@ make_file_entry :: proc(wav_index: int) -> FileEntry {
 		len(g.waves),
 	)
 
+	y := BREADTH_UI - (CAMERA_TRAVEL * f32(wav_index))
+
 	return {
 		kind = .FILE_ENTRY,
-		pos = Vec3{DEPTH_UI, BREADTH_UI, -BREADTH_UI},
+		pos = Vec3{DEPTH_UI, y, -BREADTH_UI},
 		wav_index = wav_index,
 		file_name = filepath.short_stem(g.waves[wav_index].file_path),
 	}
@@ -202,14 +206,10 @@ load_dir :: proc(dir: string) {
 			//log.assertf(errs.channels == "", errs.channels)
 		}
 
+		append(&g.entities, make_file_entry(index))
 		index += 1
 	}
 }
-
-init_entities :: proc() {
-	append(&g.entities, make_file_entry(0)) // NOTE: create the
-}
-
 
 init :: proc "c" () {
 	context = default_context
@@ -219,7 +219,6 @@ init :: proc "c" () {
 	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
 
 	init_gui()
-	init_entities()
 
 	g.image = load_image("./assets/senjou-starry.png")
 
@@ -279,6 +278,9 @@ pow :: proc(x, power: int) -> int {
 
 init_gui :: proc() {
 
+	// v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
+	g.camera.kind = .CAMERA
+	g.camera.pos = Vec3{0, 0, 0}
 
 	sg.setup({environment = sglue.environment(), logger = {func = slog.func}})
 	log.assert(sg.isvalid(), "sokol graphics setup is not valid")
@@ -366,8 +368,8 @@ init_gui :: proc() {
 
 	g.debugtext_ctx = sdebugtext.make_context(
 		{
-			char_buf_size = 64,
-			canvas_width = 32,
+			char_buf_size = 1000,
+			canvas_width = 1000,
 			canvas_height = 16,
 			color_format = .RGBA8,
 			depth_format = .NONE,
@@ -403,17 +405,17 @@ fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 
 // NOTE: hacky but it gets the job done, close enough
 BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
+CAMERA_TRAVEL := 2 * BREADTH_UI
 
-view_matrix := linalg.matrix4_look_at_f32(
-	Vec3{0.0, 0.0, 0.0},
-	Vec3{1.0, 0.0, 0.0},
-	Vec3{0.0, 1.0, 0.0},
-)
-
-// NOTE: Vec3{DEPTH_UI, BREADTH_UI, BREADTH_UI}
 compute_mvp :: proc(pos: Vec3, w: f32, h: f32) -> shaders.Vs_Params {
 
-	p := linalg.matrix4_perspective_f32(fovy, w / h, 5, 15)
+	proj_matrix := linalg.matrix4_perspective_f32(fovy, w / h, 5, 15)
+
+	view_matrix := linalg.matrix4_look_at_f32(
+		g.camera.pos,
+		Vec3{1.0, 0.0, 0.0}, // NOTE: fixed camera target
+		Vec3{0.0, 1.0, 0.0}, // NOTE: ??
+	)
 
 	model_matrix :=
 		linalg.matrix4_translate_f32(pos) *
@@ -426,7 +428,7 @@ compute_mvp :: proc(pos: Vec3, w: f32, h: f32) -> shaders.Vs_Params {
 
 
 	vs_params := shaders.Vs_Params {
-		mvp = p * view_matrix * model_matrix,
+		mvp = proj_matrix * view_matrix * model_matrix,
 	}
 	return vs_params
 }
@@ -464,7 +466,7 @@ update_gui :: proc(dt: f32) {
 	h := sapp.heightf()
 
 	sdebugtext.set_context(sdebugtext.default_context())
-	sdebugtext.canvas(f32(w) * 0.5, f32(h) * 0.5)
+	sdebugtext.canvas(w * 0.5, h * 0.5)
 
 	c := convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
 	sdebugtext.font(5)
@@ -477,6 +479,7 @@ update_gui :: proc(dt: f32) {
 	// TODO: anyway to not do two render-passes per entity, per loop? aren't render passes expensive?
 	for entity in g.entities {
 		switch entity.kind {
+		case .CAMERA:
 		case .FILE_ENTRY:
 			// NOTE: render file font
 			sg.begin_pass(g.debugtext_pass)
@@ -527,8 +530,16 @@ _in_bounds :: proc() {
 
 g_intermediary := false
 
+_move_index :: proc(n: int) {
+	g.index += n
+	_in_bounds()
+
+	g.camera.pos.y = -CAMERA_TRAVEL * f32(g.index)
+}
+
 process_user_input :: proc(dt: f32) {
 	if (key_down[.LEFT_SHIFT] || key_down[.RIGHT_SHIFT]) && key_down[.G] {
+		// TODO: _move_index(last)
 		g.index = len(g.waves)
 		_in_bounds()
 		key_down[.LEFT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
@@ -538,6 +549,7 @@ process_user_input :: proc(dt: f32) {
 
 	if key_down[.G] {
 		if g_intermediary {
+			// TODO: _move_index(first)
 			g_intermediary = false
 			g.index = 0
 			_in_bounds()
@@ -550,13 +562,11 @@ process_user_input :: proc(dt: f32) {
 
 	// NOTE: directional menu navigation
 	if key_down[.K] {
-		g.index -= 1
-		_in_bounds()
+		_move_index(-1)
 		key_down[.K] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 	if key_down[.J] {
-		g.index += 1
-		_in_bounds()
+		_move_index(1)
 		key_down[.J] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
