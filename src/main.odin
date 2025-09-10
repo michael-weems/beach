@@ -65,7 +65,10 @@ Globals :: struct {
 }
 g: ^Globals
 
-DEPTH_UI :: 6
+SAMPLE_RATE :: 44100 // NOTE: 44100hz
+DEPTH_UI :: 10 // NOTE: how far from the camera the base UI elements should be
+DEPTH_UI_SURFACE :: 8 // NOTE: how far from the camera the surface UI elements should be
+DEPTH_UI_OVERLAY :: 6 // NOTE: how far from the camera the overlay UI elements should be
 
 convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
 	return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
@@ -151,9 +154,16 @@ FileEntry :: struct {
 }
 
 make_file_entry :: proc(wav_index: int) -> FileEntry {
+	log.assertf(
+		len(g.waves) > wav_index,
+		"wav_index %d is out of bounds: max %d",
+		wav_index,
+		len(g.waves),
+	)
+
 	return {
 		kind = .FILE_ENTRY,
-		pos = Vec3{6, 0, 0},
+		pos = Vec3{DEPTH_UI, BREADTH_UI, -BREADTH_UI},
 		wav_index = wav_index,
 		file_name = filepath.short_stem(g.waves[wav_index].file_path),
 	}
@@ -194,18 +204,25 @@ load_dir :: proc(dir: string) {
 
 		index += 1
 	}
-	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s: %v", dir, read_err)
-
-	append(&g.entities, make_file_entry(0))
 }
+
+init_entities :: proc() {
+	append(&g.entities, make_file_entry(0)) // NOTE: create the
+}
+
 
 init :: proc "c" () {
 	context = default_context
 
 	g = new(Globals)
 	load_dir(process_input.audio_dir)
+	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
+
 	init_gui()
+	init_entities()
+
 	g.image = load_image("./assets/senjou-starry.png")
+
 	play_audio()
 }
 
@@ -379,23 +396,34 @@ init_gui :: proc() {
 }
 
 //v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
+
+fovy := linalg.to_radians(f32(70.0))
+fovy_half := fovy / 2
+fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
+
+// NOTE: hacky but it gets the job done, close enough
+BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
+
 view_matrix := linalg.matrix4_look_at_f32(
 	Vec3{0.0, 0.0, 0.0},
 	Vec3{1.0, 0.0, 0.0},
 	Vec3{0.0, 1.0, 0.0},
 )
 
-model_matrix :=
-	linalg.matrix4_translate_f32(Vec3{10, 0, 0}) *
-	linalg.matrix4_scale_f32(Vec3{0.1, 1, 1}) *
-	linalg.matrix4_from_yaw_pitch_roll_f32(
-		linalg.to_radians(f32(270.0)),
-		linalg.to_radians(f32(0.0)),
-		linalg.to_radians(f32(0.0)),
-	)
+// NOTE: Vec3{DEPTH_UI, BREADTH_UI, BREADTH_UI}
+compute_mvp :: proc(pos: Vec3, w: f32, h: f32) -> shaders.Vs_Params {
 
-compute_mvp :: proc(w: i32, h: i32) -> shaders.Vs_Params {
-	p := linalg.matrix4_perspective_f32(70, sapp.widthf() / sapp.heightf(), 5, 15)
+	p := linalg.matrix4_perspective_f32(fovy, w / h, 5, 15)
+
+	model_matrix :=
+		linalg.matrix4_translate_f32(pos) *
+		linalg.matrix4_scale_f32(Vec3{1, 2, 1}) *
+		linalg.matrix4_from_yaw_pitch_roll_f32(
+			linalg.to_radians(f32(270.0)),
+			linalg.to_radians(f32(0.0)),
+			linalg.to_radians(f32(0.0)),
+		)
+
 
 	vs_params := shaders.Vs_Params {
 		mvp = p * view_matrix * model_matrix,
@@ -432,13 +460,11 @@ load_image :: proc(filename: cstring) -> sg.Image {
 
 update_gui :: proc(dt: f32) {
 
-	disp_width := sapp.width()
-	disp_height := sapp.height()
-
-	mvp := compute_mvp(disp_width, disp_height)
+	w := sapp.widthf()
+	h := sapp.heightf()
 
 	sdebugtext.set_context(sdebugtext.default_context())
-	sdebugtext.canvas(f32(disp_width) * 0.5, f32(disp_height) * 0.5)
+	sdebugtext.canvas(f32(w) * 0.5, f32(h) * 0.5)
 
 	c := convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
 	sdebugtext.font(5)
@@ -448,41 +474,46 @@ update_gui :: proc(dt: f32) {
 	sdebugtext.printf("Duration: %s\n", wav.time_string(g.playing.time))
 	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
 
-	// NOTE: render file font
-	sg.begin_pass(g.debugtext_pass)
-	sdebugtext.set_context(g.debugtext_ctx)
+	// TODO: anyway to not do two render-passes per entity, per loop? aren't render passes expensive?
+	for entity in g.entities {
+		switch entity.kind {
+		case .FILE_ENTRY:
+			// NOTE: render file font
+			sg.begin_pass(g.debugtext_pass)
+			sdebugtext.set_context(g.debugtext_ctx)
 
-	sdebugtext.origin(0, 0.5)
-	sdebugtext.font(5)
-	c = convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
-	sdebugtext.color4f(c.r, c.g, c.b, c.a)
-	//sdebugtext.printf("%s\n", g.waves[0].file_path)
-	sdebugtext.printf("hi")
+			sdebugtext.origin(0, 0.5)
+			sdebugtext.font(5)
+			c = convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
+			sdebugtext.color4f(c.r, c.g, c.b, c.a)
+			sdebugtext.printf("%s\n", g.waves[g.playing_index].file_name)
 
-	sdebugtext.draw()
-	sg.end_pass()
-	// NOTE: END render file font
+			sdebugtext.draw()
+			sg.end_pass() // NOTE: END render file font
 
-	// NOTE: render geometry
-	sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
-	sg.apply_pipeline(g.pipeline)
+			// NOTE: render geometry
+			sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
+			sg.apply_pipeline(g.pipeline)
 
-	sg.apply_bindings(
-		{
-			images = {shaders.IMG_tex = g.debugtext_image},
-			vertex_buffers = g.bindings.vertex_buffers,
-			index_buffer = g.bindings.index_buffer,
-			samplers = {shaders.SMP_smp = g.sampler},
-		},
-	)
-	sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
-	sg.draw(0, 6, 1)
+			sg.apply_bindings(
+				{
+					images = {shaders.IMG_tex = g.debugtext_image},
+					vertex_buffers = g.bindings.vertex_buffers,
+					index_buffer = g.bindings.index_buffer,
+					samplers = {shaders.SMP_smp = g.sampler},
+				},
+			)
 
-	sdebugtext.set_context(sdebugtext.default_context())
-	sdebugtext.draw()
-	sg.end_pass()
+			mvp := compute_mvp(entity.pos, w, h)
+			sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
+			sg.draw(0, 6, 1)
+
+			sdebugtext.set_context(sdebugtext.default_context())
+			sdebugtext.draw()
+			sg.end_pass() // NOTE: END render geometry
+		}
+	}
 	sg.commit()
-	// NOTE: END render geometry
 
 }
 

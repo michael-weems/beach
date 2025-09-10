@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 
 /*
@@ -108,6 +109,7 @@ Contents :: struct {
 	samples:     ^f32,
 	// metadata
 	file_path:   string,
+	file_name:   string,
 	format:      PcmFormatHeader,
 	time:        Time,
 }
@@ -164,6 +166,7 @@ read_from_file :: proc(file_path: string, contents: ^Contents) {
 		return
 	}
 	contents.file_path = file_path
+	contents.file_name = filepath.short_stem(file_path)
 
 	log.debugf("wav file: %s", contents.file_path)
 
