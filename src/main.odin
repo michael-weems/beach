@@ -50,24 +50,36 @@ Entity :: struct {
 	target:       Vec3,
 	velocity:     Vec3, // NOTE: ??
 	acceleration: Vec3, // NOTE: ??
+
+	// File Info
+	file_name:    string,
+	wav_index:    int,
+}
+
+TextRenderDesc :: struct {
+	text:             string,
+	position:         Vec3, // NOTE: definitely does not belong here
+	model_matrix:     Mat4, // NOTE: definitely does not belong here
+	ctx:              sdtx.Context,
+	bindings:         sg.Bindings,
+	image:            sg.Image,
+	pass_action:      sg.Pass_Action,
+	pass_attachments: sg.Attachments,
 }
 
 Globals :: struct {
-	waves:                 [dynamic]wav.Contents,
-	entities:              [dynamic]Entity,
-	vertices:              [dynamic]Vertex,
-	indices:               []u16,
-	playing:               ^wav.Contents,
-	playing_index:         int,
-	index:                 int,
-	sdtx_ctx:              sdtx.Context,
-	sdtx_pipeline:         sg.Pipeline,
-	sdtx_bindings:         sg.Bindings,
-	sdtx_sampler:          sg.Sampler,
-	sdtx_image:            sg.Image,
-	sdtx_pass_action:      sg.Pass_Action,
-	sdtx_pass_attachments: sg.Attachments,
-	camera:                Entity,
+	waves:         [dynamic]wav.Contents,
+	entities:      [dynamic]Entity,
+	vertices:      [dynamic]Vertex,
+	indices:       []u16,
+	playing:       ^wav.Contents,
+	playing_index: int,
+	index:         int,
+	camera:        Entity,
+	pipeline:      sg.Pipeline,
+	pass_action:   sg.Pass_Action,
+	sampler:       sg.Sampler,
+	sdtx:          [EntityKind][dynamic]TextRenderDesc,
 }
 g: ^Globals
 
@@ -153,14 +165,7 @@ play_audio :: proc() {
 	)
 }
 
-FileEntry :: struct {
-	file_name:    string,
-	wav_index:    int,
-	using entity: Entity,
-}
-
-
-make_file_entry :: proc(wav_index: int) -> FileEntry {
+make_file_entry :: proc(wav_index: int) -> Entity {
 
 	log.assertf(
 		len(g.waves) > wav_index,
@@ -169,17 +174,14 @@ make_file_entry :: proc(wav_index: int) -> FileEntry {
 		len(g.waves),
 	)
 
-
 	model_matrix :=
 		linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 1, 0}) *
 		linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 0, 1}) *
 		linalg.matrix4_scale_f32(Vec3{2, 2, 1})
 
-	y := (CAMERA_TRAVEL * f32(wav_index)) - BREADTH_UI
-
-	entry := FileEntry {
+	entry := Entity {
 		kind         = .FILE_ENTRY,
-		position     = Vec3{-BREADTH_UI, y, DEPTH_UI},
+		position     = Vec3{-BREADTH_UI, -BREADTH_UI, DEPTH_UI},
 		wav_index    = wav_index,
 		model_matrix = model_matrix,
 		file_name    = filepath.short_stem(g.waves[wav_index].file_path),
@@ -279,11 +281,22 @@ init :: proc "c" () {
 	g.camera.kind = .CAMERA
 	_set_camera_position(Vec3{0, 0, 0})
 
-	sg.setup({environment = sglue.environment(), logger = {func = slog.func}})
+	sg.setup(
+		{
+			max_dispatch_calls_per_pass = 1000,
+			buffer_pool_size = 1000,
+			pipeline_pool_size = 1000,
+			image_pool_size = 1000,
+			shader_pool_size = 1000,
+			environment = sglue.environment(),
+			logger = {func = slog.func},
+		},
+	)
 	log.assert(sg.isvalid(), "sokol graphics setup is not valid")
 
 	sdtx.setup(
 		{
+			context_pool_size = 1000,
 			fonts = {
 				sdtx.font_kc853(),
 				sdtx.font_kc854(),
@@ -298,64 +311,20 @@ init :: proc "c" () {
 		},
 	)
 
-	sgl.setup({logger = {func = slog.func}})
+	sgl.setup({pipeline_pool_size = 1000, logger = {func = slog.func}})
 
 	sapp.show_mouse(false)
 	sapp.lock_mouse(true)
 
-
-	g.sdtx_ctx = sdtx.make_context(
-		{
-			char_buf_size = 64,
-			canvas_width = 64,
-			canvas_height = 16,
-			color_format = .RGBA8,
-			depth_format = .NONE,
-			sample_count = 1,
-		},
-	)
-
-	g.sdtx_image = sg.make_image(
-		{
-			usage = {render_attachment = true},
-			width = 32,
-			height = 32,
-			pixel_format = .RGBA8,
-			sample_count = 1,
-		},
-	)
-
-	g.sdtx_pass_attachments = sg.make_attachments({colors = {0 = {image = g.sdtx_image}}})
-
-	// NOTE: this *should* set the background color for the part the text will show up on
-	// TODO: change this to .SURFACE or .OVERLAY
-	g.sdtx_pass_action = {
+	g.sampler = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
+	g.pass_action = {
 		colors = {
 			0 = {load_action = .CLEAR, clear_value = convert_to_sokol_rgb(ColorTheme[.BASE])},
 		},
 	}
 
-	log.assertf(len(g.vertices) > 0, "must load wav files and intialize vertices before init_gui")
-	g.sdtx_bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
-
-	log.assertf(len(g.indices) > 0, "must load wav files and intialize vertices before init_gui")
-	g.sdtx_bindings.index_buffer = sg.make_buffer(
-		{usage = {index_buffer = true}, data = sg_range(g.indices[:])},
-	)
-
-	log.assertf(len(g.waves) > 1, "len g.waves <= 1")
-
-	g.sdtx_bindings.images = {
-		shaders.IMG_tex = g.sdtx_image,
-	}
-
-	g.sdtx_sampler = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
-	g.sdtx_bindings.samplers = {
-		shaders.SMP_smp = g.sdtx_sampler,
-	}
-
 	// create a shader and pipeline object (default render states are fine for triangle)
-	g.sdtx_pipeline = sg.make_pipeline(
+	g.pipeline = sg.make_pipeline(
 	{
 		shader = sg.make_shader(shaders.triangle_shader_desc(sg.query_backend())),
 		index_type = .UINT16,
@@ -372,6 +341,79 @@ init :: proc "c" () {
 		},
 	},
 	)
+
+	for w in 0 ..< len(g.waves) {
+
+		append(&g.sdtx[.FILE_ENTRY], TextRenderDesc{})
+
+		e := &g.sdtx[.FILE_ENTRY][len(g.sdtx[.FILE_ENTRY]) - 1]
+
+		e.text = g.waves[w].file_name
+		e.position = Vec3{-BREADTH_UI, (f32(w) * CAMERA_TRAVEL) - BREADTH_UI, DEPTH_UI}
+		e.model_matrix =
+			linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 1, 0}) *
+			linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 0, 1}) *
+			linalg.matrix4_scale_f32(Vec3{2, 2, 1})
+
+		e.ctx = sdtx.make_context(
+			{
+				char_buf_size = 64,
+				canvas_width = 64,
+				canvas_height = 16,
+				color_format = .RGBA8,
+				depth_format = .NONE,
+				sample_count = 1,
+			},
+		)
+
+		e.image = sg.make_image(
+			{
+				usage = {render_attachment = true},
+				width = 32,
+				height = 32,
+				pixel_format = .RGBA8,
+				sample_count = 1,
+			},
+		)
+
+		e.pass_attachments = sg.make_attachments({colors = {0 = {image = e.image}}})
+
+		// NOTE: this *should* set the background color for the part the text will show up on
+		// TODO: change this to .SURFACE or .OVERLAY
+		e.pass_action = {
+			colors = {
+				0 = {
+					load_action = .CLEAR,
+					clear_value = convert_to_sokol_rgb(ColorTheme[.SURFACE]),
+				},
+			},
+		}
+
+		log.assertf(
+			len(g.vertices) > 0,
+			"must load wav files and intialize vertices before init_gui",
+		)
+		e.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
+
+		log.assertf(
+			len(g.indices) > 0,
+			"must load wav files and intialize vertices before init_gui",
+		)
+		e.bindings.index_buffer = sg.make_buffer(
+			{usage = {index_buffer = true}, data = sg_range(g.indices[:])},
+		)
+
+		log.assertf(len(g.waves) > 1, "len g.waves <= 1")
+
+		e.bindings.images = {
+			shaders.IMG_tex = e.image,
+		}
+
+		e.bindings.samplers = {
+			shaders.SMP_smp = g.sampler,
+		}
+
+	}
 
 	play_audio()
 }
@@ -445,14 +487,14 @@ fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
 CAMERA_TRAVEL := 2 * BREADTH_UI
 
-compute_mvp :: proc(e: Entity, w: f32, h: f32) -> shaders.Vs_Params {
+compute_mvp :: proc(position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 
 	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
-	m := linalg.matrix4_translate_f32(e.position) * e.model_matrix
+	m := linalg.matrix4_translate_f32(position) * mm
 
 	vs_params := shaders.Vs_Params {
 		mvp = p * v * m,
@@ -517,32 +559,38 @@ update_gui :: proc(dt: f32) {
 
 	used := 0
 
-	sg.begin_pass({action = g.sdtx_pass_action, swapchain = sglue.swapchain()})
-	sg.apply_pipeline(g.sdtx_pipeline)
+	MAX_PASSES := 5
 
-	// TODO: anyway to not do two render-passes per entity, per loop? aren't render passes expensive?
+	for i in 0 ..< MAX_PASSES {
+		e := &g.sdtx[.FILE_ENTRY][i]
+		// NOTE: render file font
+		sg.begin_pass({action = e.pass_action, attachments = e.pass_attachments})
+		sdtx.set_context(e.ctx)
+
+		sdtx.origin(0, 0.5)
+		sdtx.font(5)
+		c = convert_to_sokol_rgb(ColorTheme[.BASE]) // TODO: get this color looking better somehow
+		sdtx.color4f(c.r, c.g, c.b, c.a)
+		sdtx.printf("%s\n", e.text)
+
+		sdtx.draw()
+		sg.end_pass() // NOTE: END render file font
+	}
+
+
+	sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
+	sg.apply_pipeline(g.pipeline)
+
+	/*
 	for entity in g.entities {
 		switch entity.kind {
 		case .CAMERA:
 		case .FILE_ENTRY:
-			// NOTE: render file font
-			/*
-			sg.begin_pass({action = g.sdtx_pass_action, attachments = g.sdtx_pass_attachments})
-			sdtx.set_context(g.sdtx_ctx)
-
-			sdtx.origin(0, 0.5)
-			sdtx.font(5)
-			c = convert_to_sokol_rgb(ColorTheme[.BASE]) // TODO: get this color looking better somehow
-			sdtx.color4f(c.r, c.g, c.b, c.a)
-			sdtx.printf("%s\n", g.waves[g.playing_index].file_name)
-
-			sdtx.draw()
-			sg.end_pass() // NOTE: END render file font
-			*/
-
-
 			// NOTE: render geometry
 			sg.apply_bindings(g.sdtx_bindings)
+
+			// TODO: doing the really dumb thing for now to get this working
+
 
 			mvp := compute_mvp(entity, w, h)
 			sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
@@ -552,6 +600,22 @@ update_gui :: proc(dt: f32) {
 
 		}
 	}
+	*/
+
+	// TODO: doing the really dumb thing for now to get this working
+	for i in 0 ..< MAX_PASSES {
+		e := &g.sdtx[.FILE_ENTRY][i]
+
+		// NOTE: render geometry
+		sg.apply_bindings(e.bindings)
+
+		mvp := compute_mvp(e.position, e.model_matrix, w, h)
+		sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
+
+		sg.draw(0, 6, 1)
+	}
+
+
 	sdtx.set_context(sdtx.default_context())
 	sdtx.draw()
 	sg.end_pass() // NOTE: END render geometry
