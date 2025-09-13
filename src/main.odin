@@ -491,6 +491,7 @@ compute_mvp :: proc(position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Para
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 
+
 	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
@@ -530,6 +531,17 @@ load_image :: proc(filename: cstring) -> sg.Image {
 }
 
 update_gui :: proc(dt: f32) {
+
+	if spinning {
+		/*
+		// TODO: rotate the camera + find a better way to create these animations
+		g.camera.position =
+			linalg.matrix4_rotate_f32(linalg.to_radians(f32(2 * dt)), Vec3{0, 1, 0}) *
+			g.camera.position
+			*/
+
+	}
+
 
 	w := sapp.widthf()
 	h := sapp.heightf()
@@ -649,6 +661,8 @@ _move_index :: proc(n: int) {
 	_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
 }
 
+spinning := false
+
 process_user_input :: proc(dt: f32) {
 	// NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
 
@@ -677,6 +691,14 @@ process_user_input :: proc(dt: f32) {
 	if key_down[.RIGHT] {
 		// TODO: here for debugging, can remove later
 		_add_camera_position(Vec3{.1, 0, 0})
+	}
+	if key_down[.Q] {
+		if spinning {
+			spinning = false
+		} else {
+			spinning = true
+		}
+		key_down[.Q] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
 	if key_down[._0] {
