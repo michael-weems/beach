@@ -4,7 +4,12 @@
     - [ ] figure out why file "cards" are not showing up
     - [ ] translate all regions from model view to camera view, stacked vertically on top of each other
     - [ ] moving up and down the list should move the regions up and down
+- [ ] rounded corners on cards
+- [ ] implement custom color themes
+- [ ] add animations for camera movement
+    - [ ] "composable" so it's not like "one animation at a time" but I can stack them (eg. "spin camera around list" can be done independently + summed with "move camera up and down")
 - [ ] import more sounds from field recorder
+- [ ] improve performance for large files / large directories
 - [ ] improve `standardize` to include converting other formats to wav: `mp4`, `mp3`, `flac`, etc...
 - [ ] 
 

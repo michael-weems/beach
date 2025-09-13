@@ -44,8 +44,13 @@ EntityKind :: enum {
 }
 
 Entity :: struct {
-	kind: EntityKind,
-	pos:  Vec3,
+	kind:               EntityKind,
+	vertex_index_start: int,
+	draw_length:        int,
+	position:           Vec3,
+	target:             Vec3,
+	velocity:           Vec3, // NOTE: ??
+	acceleration:       Vec3, // NOTE: ??
 }
 
 Globals :: struct {
@@ -55,7 +60,8 @@ Globals :: struct {
 	playing_index:   int,
 	index:           int,
 	image:           sg.Image,
-	vertices:        []Vertex,
+	vertices:        [dynamic]Vertex,
+	indices:         [dynamic]u16,
 	pipeline:        sg.Pipeline,
 	bindings:        sg.Bindings,
 	pass_action:     sg.Pass_Action,
@@ -155,7 +161,30 @@ FileEntry :: struct {
 	using entity: Entity,
 }
 
-make_file_entry :: proc(wav_index: int) -> FileEntry {
+DEFAULT_FILE_COLOR := convert_to_sokol_rgb(ColorTheme[.OVERLAY])
+
+// TODO: we'll figure out if this should be constant or a function call later
+make_file_entry_vertices :: proc(
+	start_index: int,
+	color: sg.Color = DEFAULT_FILE_COLOR,
+) -> (
+	[4]Vertex,
+	[6]u16,
+) {
+	i := u16(start_index)
+
+	// a vertex buffer with 3 vertices
+	// TODO: how does uv work here?
+	return [4]Vertex {
+		{pos = {0.0, -1.0, -1.0}, color = color, uv = {0, 0}},
+		{pos = {0.0, 1.0, -1.0}, color = color, uv = {1, 0}},
+		{pos = {0.0, -1.0, 1.0}, color = color, uv = {0, 1}},
+		{pos = {0.0, 1.0, 1.0}, color = color, uv = {1, 1}},
+	}, [6]u16{i + 0, i + 1, i + 2, i + 2, i + 1, i + 3}
+}
+
+make_file_entry :: proc(wav_index: int, vertex_index_start: int, draw_length: int) -> FileEntry {
+
 	log.assertf(
 		len(g.waves) > wav_index,
 		"wav_index %d is out of bounds: max %d",
@@ -165,12 +194,16 @@ make_file_entry :: proc(wav_index: int) -> FileEntry {
 
 	y := BREADTH_UI - (CAMERA_TRAVEL * f32(wav_index))
 
-	return {
-		kind = .FILE_ENTRY,
-		pos = Vec3{DEPTH_UI, y, -BREADTH_UI},
-		wav_index = wav_index,
-		file_name = filepath.short_stem(g.waves[wav_index].file_path),
+	entry := FileEntry {
+		kind               = .FILE_ENTRY,
+		position           = Vec3{DEPTH_UI, y, -BREADTH_UI},
+		wav_index          = wav_index,
+		vertex_index_start = vertex_index_start,
+		draw_length        = draw_length,
+		file_name          = filepath.short_stem(g.waves[wav_index].file_path),
 	}
+
+	return entry
 }
 
 load_dir :: proc(dir: string) {
@@ -206,7 +239,25 @@ load_dir :: proc(dir: string) {
 			//log.assertf(errs.channels == "", errs.channels)
 		}
 
-		append(&g.entities, make_file_entry(index))
+		start_vertices := len(g.vertices)
+		start_indices := len(g.indices)
+		vertices, indices := make_file_entry_vertices(start_index = start_vertices)
+
+		for i in 0 ..< len(vertices) {
+			append(&g.vertices, vertices[i])
+		}
+
+		for i in 0 ..< len(indices) {
+			append(&g.indices, indices[i])
+		}
+
+		entry := make_file_entry(
+			wav_index = index,
+			vertex_index_start = start_indices,
+			draw_length = 6,
+		)
+		append(&g.entities, entry)
+
 		index += 1
 	}
 }
@@ -280,7 +331,8 @@ init_gui :: proc() {
 
 	// v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
 	g.camera.kind = .CAMERA
-	g.camera.pos = Vec3{0, 0, 0}
+	g.camera.position = Vec3{0, 0, 0}
+	g.camera.target = Vec3{1.0, 0.0, 0.0}
 
 	sg.setup({environment = sglue.environment(), logger = {func = slog.func}})
 	log.assert(sg.isvalid(), "sokol graphics setup is not valid")
@@ -308,27 +360,13 @@ init_gui :: proc() {
 
 	_color := convert_to_sokol_rgb(ColorTheme[.OVERLAY])
 
-	// a vertex buffer with 3 vertices
 
-	// TODO: how does uv work here?
+	log.assertf(len(g.vertices) > 0, "must load wav files and intialize vertices before init_gui")
+	g.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
 
-	g.vertices = []Vertex {
-		{pos = {-1.0, -0.2, 0.0}, color = _color, uv = {0, 0}},
-		{pos = {1.0, -0.2, 0.0}, color = _color, uv = {1, 0}},
-		{pos = {-1.0, 0.2, 0.0}, color = _color, uv = {0, 1}},
-		{pos = {1.0, 0.2, 0.0}, color = _color, uv = {1, 1}},
-	}
-
-	g.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices)})
-	
-	// odinfmt: disable
-	indices := []u16 {
-		0, 1, 2,
-		2, 1, 3,
-	}
-	// odinfmt: enable
+	log.assertf(len(g.indices) > 0, "must load wav files and intialize vertices before init_gui")
 	g.bindings.index_buffer = sg.make_buffer(
-		{usage = {index_buffer = true}, data = sg_range(indices)},
+		{usage = {index_buffer = true}, data = sg_range(g.indices[:])},
 	)
 
 	g.bindings.images = {
@@ -399,7 +437,7 @@ init_gui :: proc() {
 
 //v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
 
-fovy := linalg.to_radians(f32(70.0))
+fovy := linalg.to_radians(f32(90.0))
 fovy_half := fovy / 2
 fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 
@@ -409,23 +447,19 @@ CAMERA_TRAVEL := 2 * BREADTH_UI
 
 compute_mvp :: proc(pos: Vec3, w: f32, h: f32) -> shaders.Vs_Params {
 
-	proj_matrix := linalg.matrix4_perspective_f32(fovy, w / h, 5, 15)
+	proj_matrix := linalg.matrix4_perspective_f32(fovy, w / h, 0.0001, 15)
 
 	view_matrix := linalg.matrix4_look_at_f32(
-		g.camera.pos,
-		Vec3{1.0, 0.0, 0.0}, // NOTE: fixed camera target
-		Vec3{0.0, 1.0, 0.0}, // NOTE: ??
+		g.camera.position,
+		g.camera.target,
+		Vec3{0.0, 1.0, 0.0}, // NOTE: y == up
 	)
 
+	// NOTE: T * R * S --> Scale, then rotate, then translate
 	model_matrix :=
 		linalg.matrix4_translate_f32(pos) *
-		linalg.matrix4_scale_f32(Vec3{1, 2, 1}) *
-		linalg.matrix4_from_yaw_pitch_roll_f32(
-			linalg.to_radians(f32(270.0)),
-			linalg.to_radians(f32(0.0)),
-			linalg.to_radians(f32(0.0)),
-		)
-
+		linalg.matrix4_rotate_f32(linalg.to_radians(f32(270)), {0, 1, 0}) *
+		linalg.matrix4_scale_f32(Vec3{1, 1, 1})
 
 	vs_params := shaders.Vs_Params {
 		mvp = proj_matrix * view_matrix * model_matrix,
@@ -468,6 +502,8 @@ update_gui :: proc(dt: f32) {
 	sdebugtext.set_context(sdebugtext.default_context())
 	sdebugtext.canvas(w * 0.5, h * 0.5)
 
+	g.camera.target = g.entities[0].position
+
 	c := convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
 	sdebugtext.font(5)
 	sdebugtext.color4f(c.r, c.g, c.b, c.a)
@@ -475,6 +511,32 @@ update_gui :: proc(dt: f32) {
 	sdebugtext.printf("File:     %s\n", g.playing.file_path)
 	sdebugtext.printf("Duration: %s\n", wav.time_string(g.playing.time))
 	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
+	sdebugtext.printf(
+		"camera: position: x=%f y=%f z=%f\n",
+		g.camera.position.x,
+		g.camera.position.y,
+		g.camera.position.z,
+	)
+	sdebugtext.printf(
+		"camera: target: x=%f y=%f z=%f\n",
+		g.camera.target.x,
+		g.camera.target.y,
+		g.camera.target.z,
+	)
+	sdebugtext.printf(
+		"ent 0: x=%f y=%f z=%f s=%d\n",
+		g.entities[0].position.x,
+		g.entities[0].position.y,
+		g.entities[0].position.z,
+		g.entities[0].vertex_index_start,
+	)
+	sdebugtext.printf(
+		"ent 1: x=%f y=%f z=%f s=%d\n",
+		g.entities[1].position.x,
+		g.entities[1].position.y,
+		g.entities[1].position.z,
+		g.entities[1].vertex_index_start,
+	)
 
 	// TODO: anyway to not do two render-passes per entity, per loop? aren't render passes expensive?
 	for entity in g.entities {
@@ -507,9 +569,9 @@ update_gui :: proc(dt: f32) {
 				},
 			)
 
-			mvp := compute_mvp(entity.pos, w, h)
+			mvp := compute_mvp(entity.position, w, h)
 			sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
-			sg.draw(0, 6, 1)
+			sg.draw(entity.vertex_index_start, entity.draw_length, 1)
 
 			sdebugtext.set_context(sdebugtext.default_context())
 			sdebugtext.draw()
@@ -534,14 +596,30 @@ _move_index :: proc(n: int) {
 	g.index += n
 	_in_bounds()
 
-	g.camera.pos.y = -CAMERA_TRAVEL * f32(g.index)
+	// TODO: ideas for animating index movement
+	// - animations disabled: important!
+	// - zoom out and zoom back in on the index you're trying to look at
+	// - accelerate then deccelerate
+	// - swirl around the list, camera kept pointing at the list as it rotates around it and moves up / down
+	// - think of more!
+
+	// NOTE: for now, we just move up and down
+	g.camera.position.y = -CAMERA_TRAVEL * f32(g.index)
 }
 
 process_user_input :: proc(dt: f32) {
+
+	if key_down[.DOWN] {
+		g.camera.position.y -= 0.1
+	}
+	if key_down[.UP] {
+		g.camera.position.y += 0.1
+	}
+
+	// TODO: Ctrl + d and Ctrl + u for jumping multiple up and down
+
 	if (key_down[.LEFT_SHIFT] || key_down[.RIGHT_SHIFT]) && key_down[.G] {
-		// TODO: _move_index(last)
-		g.index = len(g.waves)
-		_in_bounds()
+		_move_index(len(g.waves))
 		key_down[.LEFT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
 		key_down[.RIGHT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
 		key_down[.G] = false // NOTE: manually disable it so it doesn't keep cutting
@@ -551,8 +629,7 @@ process_user_input :: proc(dt: f32) {
 		if g_intermediary {
 			// TODO: _move_index(first)
 			g_intermediary = false
-			g.index = 0
-			_in_bounds()
+			_move_index(-len(g.waves))
 		} else {
 			g_intermediary = true
 		}
@@ -615,7 +692,6 @@ process_user_input :: proc(dt: f32) {
 		if g.playing.sample_idx > len(g.playing.samples_raw) do g.playing.sample_idx = len(g.playing.samples_raw) - 40000
 		key_down[.L] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
-
 }
 
 // TODO: this slow. we don't need it to be fast (yet). but we're getting < 60fps and this is most likely the cause. For this app, we don't need more than 30fps (probably). But I'd like to get it >60fps, >120fps if possible
