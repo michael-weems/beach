@@ -406,8 +406,8 @@ init_gui :: proc() {
 
 	g.debugtext_ctx = sdebugtext.make_context(
 		{
-			char_buf_size = 1000,
-			canvas_width = 1000,
+			char_buf_size = 64,
+			canvas_width = 64,
 			canvas_height = 16,
 			color_format = .RGBA8,
 			depth_format = .NONE,
@@ -458,6 +458,11 @@ compute_mvp :: proc(pos: Vec3, w: f32, h: f32) -> shaders.Vs_Params {
 	// NOTE: T * R * S --> Scale, then rotate, then translate
 	model_matrix :=
 		linalg.matrix4_translate_f32(pos) *
+		linalg.matrix4_from_yaw_pitch_roll_f32(
+			linalg.to_radians(f32(90.0)),
+			linalg.to_radians(f32(90.0)),
+			linalg.to_radians(f32(90.0)),
+		) *
 		linalg.matrix4_rotate_f32(linalg.to_radians(f32(270)), {0, 1, 0}) *
 		linalg.matrix4_scale_f32(Vec3{1, 1, 1})
 
@@ -509,7 +514,11 @@ update_gui :: proc(dt: f32) {
 	sdebugtext.color4f(c.r, c.g, c.b, c.a)
 	sdebugtext.origin(1, 1)
 	sdebugtext.printf("File:     %s\n", g.playing.file_path)
-	sdebugtext.printf("Duration: %s\n", wav.time_string(g.playing.time))
+	sdebugtext.printf(
+		"duration=%s: idx=%d\n",
+		wav.time_string(g.playing.time),
+		g.playing.sample_idx,
+	)
 	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
 	sdebugtext.printf(
 		"camera: position: x=%f y=%f z=%f\n",
@@ -608,6 +617,7 @@ _move_index :: proc(n: int) {
 }
 
 process_user_input :: proc(dt: f32) {
+	// NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
 
 	if key_down[.DOWN] {
 		g.camera.position.y -= 0.1
@@ -616,7 +626,26 @@ process_user_input :: proc(dt: f32) {
 		g.camera.position.y += 0.1
 	}
 
-	// TODO: Ctrl + d and Ctrl + u for jumping multiple up and down
+	if key_down[._0] {
+		g.playing.sample_idx = 0
+		key_down[._0] = false // NOTE: manually disable it so it doesn't keep cutting
+	}
+
+	if key_down[.U] {
+		// TODO: undo 😱
+	}
+	if (key_down[.LEFT_CONTROL] || key_down[.RIGHT_CONTROL]) && key_down[.R] {
+		// TODO: redo 😱
+	}
+
+	if (key_down[.LEFT_SHIFT] || key_down[.RIGHT_SHIFT]) && key_down[._4] {
+		g.playing.sample_idx = len(g.playing.samples_raw) - 1
+		key_down[.LEFT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
+		key_down[.RIGHT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
+		key_down[._4] = false // NOTE: manually disable it so it doesn't keep cutting
+	}
+
+	// TODO: Ctrl + d and Ctrl + u for jumping multiple up and down: hard-code / calculate correct number to jump
 
 	if (key_down[.LEFT_SHIFT] || key_down[.RIGHT_SHIFT]) && key_down[.G] {
 		_move_index(len(g.waves))
@@ -663,6 +692,7 @@ process_user_input :: proc(dt: f32) {
 		key_down[.ENTER] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
+	// TODO: change 'e' to go to end of next 'word' or section of higher gain
 	if key_down[.E] {
 		if len(g.playing.samples_raw) >= 44100 {
 			g.playing.samples_raw = g.playing.samples_raw[:g.playing.sample_idx]
@@ -672,6 +702,7 @@ process_user_input :: proc(dt: f32) {
 			key_down[.E] = false // NOTE: manually disable it so it doesn't keep cutting
 		}
 	}
+	// TODO: change 'b' to go to beginning of prev 'word' or section of higher gain
 	if key_down[.B] {
 		if len(g.playing.samples_raw) >= 44100 {
 			g.playing.samples_raw = g.playing.samples_raw[g.playing.sample_idx:]
@@ -680,6 +711,7 @@ process_user_input :: proc(dt: f32) {
 			key_down[.B] = false // NOTE: manually disable it so it doesn't keep cutting
 		}
 	}
+	// TODO: change 'w' to go to beginning of next 'word' or section of higher gain
 
 	// NOTE: scan through song
 	if key_down[.H] {
