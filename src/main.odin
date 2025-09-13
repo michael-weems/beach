@@ -16,7 +16,7 @@ import "core:strings"
 import "core:time"
 import sapp "shared:sokol/app"
 import sa "shared:sokol/audio"
-import sdebugtext "shared:sokol/debugtext"
+import sdtx "shared:sokol/debugtext"
 import sg "shared:sokol/gfx"
 import sgl "shared:sokol/gl"
 import sglue "shared:sokol/glue"
@@ -44,32 +44,30 @@ EntityKind :: enum {
 }
 
 Entity :: struct {
-	kind:               EntityKind,
-	vertex_index_start: int,
-	draw_length:        int,
-	position:           Vec3,
-	target:             Vec3,
-	velocity:           Vec3, // NOTE: ??
-	acceleration:       Vec3, // NOTE: ??
+	kind:         EntityKind,
+	position:     Vec3,
+	model_matrix: Mat4,
+	target:       Vec3,
+	velocity:     Vec3, // NOTE: ??
+	acceleration: Vec3, // NOTE: ??
 }
 
 Globals :: struct {
-	waves:           [dynamic]wav.Contents,
-	entities:        [dynamic]Entity,
-	playing:         ^wav.Contents,
-	playing_index:   int,
-	index:           int,
-	image:           sg.Image,
-	vertices:        [dynamic]Vertex,
-	indices:         [dynamic]u16,
-	pipeline:        sg.Pipeline,
-	bindings:        sg.Bindings,
-	pass_action:     sg.Pass_Action,
-	sampler:         sg.Sampler,
-	debugtext_ctx:   sdebugtext.Context,
-	debugtext_image: sg.Image,
-	debugtext_pass:  sg.Pass,
-	camera:          Entity,
+	waves:                 [dynamic]wav.Contents,
+	entities:              [dynamic]Entity,
+	vertices:              [dynamic]Vertex,
+	indices:               []u16,
+	playing:               ^wav.Contents,
+	playing_index:         int,
+	index:                 int,
+	sdtx_ctx:              sdtx.Context,
+	sdtx_pipeline:         sg.Pipeline,
+	sdtx_bindings:         sg.Bindings,
+	sdtx_sampler:          sg.Sampler,
+	sdtx_image:            sg.Image,
+	sdtx_pass_action:      sg.Pass_Action,
+	sdtx_pass_attachments: sg.Attachments,
+	camera:                Entity,
 }
 g: ^Globals
 
@@ -161,29 +159,8 @@ FileEntry :: struct {
 	using entity: Entity,
 }
 
-DEFAULT_FILE_COLOR := convert_to_sokol_rgb(ColorTheme[.OVERLAY])
 
-// TODO: we'll figure out if this should be constant or a function call later
-make_file_entry_vertices :: proc(
-	start_index: int,
-	color: sg.Color = DEFAULT_FILE_COLOR,
-) -> (
-	[4]Vertex,
-	[6]u16,
-) {
-	i := u16(start_index)
-
-	// a vertex buffer with 3 vertices
-	// TODO: how does uv work here?
-	return [4]Vertex {
-		{pos = {0.0, -1.0, -1.0}, color = color, uv = {0, 0}},
-		{pos = {0.0, 1.0, -1.0}, color = color, uv = {1, 0}},
-		{pos = {0.0, -1.0, 1.0}, color = color, uv = {0, 1}},
-		{pos = {0.0, 1.0, 1.0}, color = color, uv = {1, 1}},
-	}, [6]u16{i + 0, i + 1, i + 2, i + 2, i + 1, i + 3}
-}
-
-make_file_entry :: proc(wav_index: int, vertex_index_start: int, draw_length: int) -> FileEntry {
+make_file_entry :: proc(wav_index: int) -> FileEntry {
 
 	log.assertf(
 		len(g.waves) > wav_index,
@@ -192,18 +169,33 @@ make_file_entry :: proc(wav_index: int, vertex_index_start: int, draw_length: in
 		len(g.waves),
 	)
 
-	y := BREADTH_UI - (CAMERA_TRAVEL * f32(wav_index))
+
+	model_matrix :=
+		linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 1, 0}) *
+		linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 0, 1}) *
+		linalg.matrix4_scale_f32(Vec3{2, 2, 1})
+
+	y := (CAMERA_TRAVEL * f32(wav_index)) - BREADTH_UI
 
 	entry := FileEntry {
-		kind               = .FILE_ENTRY,
-		position           = Vec3{DEPTH_UI, y, -BREADTH_UI},
-		wav_index          = wav_index,
-		vertex_index_start = vertex_index_start,
-		draw_length        = draw_length,
-		file_name          = filepath.short_stem(g.waves[wav_index].file_path),
+		kind         = .FILE_ENTRY,
+		position     = Vec3{-BREADTH_UI, y, DEPTH_UI},
+		wav_index    = wav_index,
+		model_matrix = model_matrix,
+		file_name    = filepath.short_stem(g.waves[wav_index].file_path),
 	}
 
 	return entry
+}
+
+EntityIndex :: struct {
+	start: int,
+	len:   int,
+}
+
+index_registry := [EntityKind]EntityIndex {
+	.CAMERA = {},
+	.FILE_ENTRY = {start = 0, len = 6},
 }
 
 load_dir :: proc(dir: string) {
@@ -219,6 +211,7 @@ load_dir :: proc(dir: string) {
 	if len(g.waves) != 0 do delete(g.waves)
 	g.waves = {}
 
+	// NOTE: process files
 	index := 0
 	for e in entries {
 		if e.is_dir do continue
@@ -239,26 +232,29 @@ load_dir :: proc(dir: string) {
 			//log.assertf(errs.channels == "", errs.channels)
 		}
 
-		start_vertices := len(g.vertices)
-		start_indices := len(g.indices)
-		vertices, indices := make_file_entry_vertices(start_index = start_vertices)
-
-		for i in 0 ..< len(vertices) {
-			append(&g.vertices, vertices[i])
-		}
-
-		for i in 0 ..< len(indices) {
-			append(&g.indices, indices[i])
-		}
-
-		entry := make_file_entry(
-			wav_index = index,
-			vertex_index_start = start_indices,
-			draw_length = 6,
-		)
+		entry := make_file_entry(wav_index = index)
 		append(&g.entities, entry)
 
 		index += 1
+	}
+}
+
+file_name_vertices :: proc() -> [4]Vertex {
+	color_surface := convert_to_sokol_rgb(ColorTheme[.SURFACE])
+	color_a := sg.Color{1, 1, 1, 1}
+	color_b := sg.Color{1, 1, 0, 1}
+	color_c := sg.Color{0, 1, 1, 1}
+	color_d := sg.Color{1, 0, 1, 1}
+	color_e := sg.Color{1, 0, 0, 1}
+	color_f := sg.Color{0, 1, 0, 1}
+	return [4]Vertex {
+		// NOTE: file-name
+		{pos = {1, 1, 0.0}, color = color_a, uv = {1, 1}},
+		{pos = {1, 0, 0.0}, color = color_b, uv = {1, 0}},
+		{pos = {0, 1, 0.0}, color = color_c, uv = {0, 1}},
+		{pos = {0, 0, 0.0}, color = color_d, uv = {0, 0}},
+		//{pos = {-1, 0, 0.0}, color = color_e, uv = {1, 0}},
+		//{pos = {-1, 1, 0.0}, color = color_f, uv = {0, 0}},
 	}
 }
 
@@ -269,9 +265,113 @@ init :: proc "c" () {
 	load_dir(process_input.audio_dir)
 	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
 
-	init_gui()
+	vertices := file_name_vertices()
+	for v in 0 ..< len(vertices) do append(&g.vertices, vertices[v])
+	
+	// odinfmt: disable
+	g.indices = []u16{
+		0, 1, 2,   2, 1, 3,  // NOTE: file-name
+		//0, 1, 2,   2, 1, 3,   2, 3, 5,   5, 4, 3, // NOTE: file-name
+	}
+	// odinfmt: enable
 
-	g.image = load_image("./assets/senjou-starry.png")
+	// v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
+	g.camera.kind = .CAMERA
+	_set_camera_position(Vec3{0, 0, 0})
+
+	sg.setup({environment = sglue.environment(), logger = {func = slog.func}})
+	log.assert(sg.isvalid(), "sokol graphics setup is not valid")
+
+	sdtx.setup(
+		{
+			fonts = {
+				sdtx.font_kc853(),
+				sdtx.font_kc854(),
+				sdtx.font_z1013(),
+				sdtx.font_cpc(),
+				sdtx.font_c64(),
+				sdtx.font_oric(),
+				sdtx.font_oric(), // TODO: ???
+				sdtx.font_oric(), // TODO: ???
+			},
+			logger = {func = slog.func},
+		},
+	)
+
+	sgl.setup({logger = {func = slog.func}})
+
+	sapp.show_mouse(false)
+	sapp.lock_mouse(true)
+
+
+	g.sdtx_ctx = sdtx.make_context(
+		{
+			char_buf_size = 64,
+			canvas_width = 64,
+			canvas_height = 16,
+			color_format = .RGBA8,
+			depth_format = .NONE,
+			sample_count = 1,
+		},
+	)
+
+	g.sdtx_image = sg.make_image(
+		{
+			usage = {render_attachment = true},
+			width = 32,
+			height = 32,
+			pixel_format = .RGBA8,
+			sample_count = 1,
+		},
+	)
+
+	g.sdtx_pass_attachments = sg.make_attachments({colors = {0 = {image = g.sdtx_image}}})
+
+	// NOTE: this *should* set the background color for the part the text will show up on
+	// TODO: change this to .SURFACE or .OVERLAY
+	g.sdtx_pass_action = {
+		colors = {
+			0 = {load_action = .CLEAR, clear_value = convert_to_sokol_rgb(ColorTheme[.BASE])},
+		},
+	}
+
+	log.assertf(len(g.vertices) > 0, "must load wav files and intialize vertices before init_gui")
+	g.sdtx_bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
+
+	log.assertf(len(g.indices) > 0, "must load wav files and intialize vertices before init_gui")
+	g.sdtx_bindings.index_buffer = sg.make_buffer(
+		{usage = {index_buffer = true}, data = sg_range(g.indices[:])},
+	)
+
+	log.assertf(len(g.waves) > 1, "len g.waves <= 1")
+
+	g.sdtx_bindings.images = {
+		shaders.IMG_tex = g.sdtx_image,
+	}
+
+	g.sdtx_sampler = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
+	g.sdtx_bindings.samplers = {
+		shaders.SMP_smp = g.sdtx_sampler,
+	}
+
+	// create a shader and pipeline object (default render states are fine for triangle)
+	g.sdtx_pipeline = sg.make_pipeline(
+	{
+		shader = sg.make_shader(shaders.triangle_shader_desc(sg.query_backend())),
+		index_type = .UINT16,
+		depth = {
+			write_enabled = true, // always write to depth buffer
+			compare       = .LESS_EQUAL, // don't render objects behind objects in view
+		},
+		layout = {
+			attrs = {
+				shaders.ATTR_triangle_position = {format = .FLOAT3},
+				shaders.ATTR_triangle_color0 = {format = .FLOAT4},
+				shaders.ATTR_triangle_uv = {format = .FLOAT2},
+			},
+		},
+	},
+	)
 
 	play_audio()
 }
@@ -327,115 +427,15 @@ pow :: proc(x, power: int) -> int {
 	return result
 }
 
-init_gui :: proc() {
-
-	// v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
-	g.camera.kind = .CAMERA
-	g.camera.position = Vec3{0, 0, 0}
-	g.camera.target = Vec3{1.0, 0.0, 0.0}
-
-	sg.setup({environment = sglue.environment(), logger = {func = slog.func}})
-	log.assert(sg.isvalid(), "sokol graphics setup is not valid")
-
-	sdebugtext.setup(
-		{
-			fonts = {
-				sdebugtext.font_kc853(),
-				sdebugtext.font_kc854(),
-				sdebugtext.font_z1013(),
-				sdebugtext.font_cpc(),
-				sdebugtext.font_c64(),
-				sdebugtext.font_oric(),
-				sdebugtext.font_oric(), // TODO: ???
-				sdebugtext.font_oric(), // TODO: ???
-			},
-			logger = {func = slog.func},
-		},
-	)
-
-	sgl.setup({logger = {func = slog.func}})
-
-	sapp.show_mouse(false)
-	sapp.lock_mouse(true)
-
-	_color := convert_to_sokol_rgb(ColorTheme[.OVERLAY])
-
-
-	log.assertf(len(g.vertices) > 0, "must load wav files and intialize vertices before init_gui")
-	g.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
-
-	log.assertf(len(g.indices) > 0, "must load wav files and intialize vertices before init_gui")
-	g.bindings.index_buffer = sg.make_buffer(
-		{usage = {index_buffer = true}, data = sg_range(g.indices[:])},
-	)
-
-	g.bindings.images = {
-		shaders.IMG_tex = g.image, // TODO: make this a texture option somehow?
-	}
-
-	g.sampler = sg.make_sampler({})
-	g.bindings.samplers = {
-		shaders.SMP_smp = g.sampler,
-	}
-
-	// create a shader and pipeline object (default render states are fine for triangle)
-	g.pipeline = sg.make_pipeline(
-		{
-			shader = sg.make_shader(shaders.triangle_shader_desc(sg.query_backend())),
-			index_type = .UINT16,
-			depth = {
-				write_enabled = true, // always write to depth buffer
-				compare       = .LESS_EQUAL, // don't render objects behind objects in view
-			},
-			layout = {
-				attrs = {
-					shaders.ATTR_triangle_position = {format = .FLOAT3},
-					shaders.ATTR_triangle_color0 = {format = .FLOAT4},
-					shaders.ATTR_triangle_uv = {format = .FLOAT2},
-				},
-			},
-		},
-	)
-
-	// a pass action to clear framebuffer to black
-	g.pass_action = {
-		colors = {
-			0 = {load_action = .CLEAR, clear_value = convert_to_sokol_rgb(ColorTheme[.BASE])},
-		},
-	}
-
-	g.debugtext_ctx = sdebugtext.make_context(
-		{
-			char_buf_size = 64,
-			canvas_width = 64,
-			canvas_height = 16,
-			color_format = .RGBA8,
-			depth_format = .NONE,
-			sample_count = 1,
-		},
-	)
-
-	g.debugtext_image = sg.make_image(
-		{
-			usage = {render_attachment = true},
-			width = 32,
-			height = 32,
-			pixel_format = .RGBA8,
-			sample_count = 1,
-		},
-	)
-
-	g.debugtext_pass = sg.Pass {
-		attachments = sg.make_attachments({colors = {0 = {image = g.debugtext_image}}}),
-		// NOTE: this *should* set the background color for the part the text will show up on
-		// TODO: change this to .SURFACE or .OVERLAY
-		action = {colors = {0 = {load_action = .CLEAR, clear_value = ColorTheme[.DEBUG_TEXT]}}},
-	}
-
-	g.sampler = sg.make_sampler({min_filter = .NEAREST, mag_filter = .NEAREST})
+_add_camera_position :: proc(position: Vec3) {
+	_set_camera_position(g.camera.position + position)
 }
 
-//v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
+_set_camera_position :: proc(position: Vec3) {
+	g.camera.position = position
+	g.camera.target = position
+	g.camera.target.z += 1 // NOTE: camera: x: -left and +right, y: -up and +down, z: +forward/zoomin and -backward/zoomout
+}
 
 fovy := linalg.to_radians(f32(90.0))
 fovy_half := fovy / 2
@@ -445,29 +445,17 @@ fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
 CAMERA_TRAVEL := 2 * BREADTH_UI
 
-compute_mvp :: proc(pos: Vec3, w: f32, h: f32) -> shaders.Vs_Params {
+compute_mvp :: proc(e: Entity, w: f32, h: f32) -> shaders.Vs_Params {
 
-	proj_matrix := linalg.matrix4_perspective_f32(fovy, w / h, 0.0001, 15)
+	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 
-	view_matrix := linalg.matrix4_look_at_f32(
-		g.camera.position,
-		g.camera.target,
-		Vec3{0.0, 1.0, 0.0}, // NOTE: y == up
-	)
+	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
-	model_matrix :=
-		linalg.matrix4_translate_f32(pos) *
-		linalg.matrix4_from_yaw_pitch_roll_f32(
-			linalg.to_radians(f32(90.0)),
-			linalg.to_radians(f32(90.0)),
-			linalg.to_radians(f32(90.0)),
-		) *
-		linalg.matrix4_rotate_f32(linalg.to_radians(f32(270)), {0, 1, 0}) *
-		linalg.matrix4_scale_f32(Vec3{1, 1, 1})
+	m := linalg.matrix4_translate_f32(e.position) * e.model_matrix
 
 	vs_params := shaders.Vs_Params {
-		mvp = proj_matrix * view_matrix * model_matrix,
+		mvp = p * v * m,
 	}
 	return vs_params
 }
@@ -504,48 +492,33 @@ update_gui :: proc(dt: f32) {
 	w := sapp.widthf()
 	h := sapp.heightf()
 
-	sdebugtext.set_context(sdebugtext.default_context())
-	sdebugtext.canvas(w * 0.5, h * 0.5)
-
-	g.camera.target = g.entities[0].position
+	sdtx.set_context(sdtx.default_context())
+	sdtx.canvas(w * 0.5, h * 0.5)
 
 	c := convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
-	sdebugtext.font(5)
-	sdebugtext.color4f(c.r, c.g, c.b, c.a)
-	sdebugtext.origin(1, 1)
-	sdebugtext.printf("File:     %s\n", g.playing.file_path)
-	sdebugtext.printf(
-		"duration=%s: idx=%d\n",
-		wav.time_string(g.playing.time),
-		g.playing.sample_idx,
-	)
-	sdebugtext.printf("FPS: %f\n", 1 / sapp.frame_duration())
-	sdebugtext.printf(
+	sdtx.font(5)
+	sdtx.color4f(c.r, c.g, c.b, c.a)
+	sdtx.origin(1, 1)
+	sdtx.printf("File:     %s\n", g.playing.file_path)
+	sdtx.printf("duration=%s: idx=%d\n", wav.time_string(g.playing.time), g.playing.sample_idx)
+	sdtx.printf("FPS: %f\n", 1 / sapp.frame_duration())
+	sdtx.printf(
 		"camera: position: x=%f y=%f z=%f\n",
 		g.camera.position.x,
 		g.camera.position.y,
 		g.camera.position.z,
 	)
-	sdebugtext.printf(
+	sdtx.printf(
 		"camera: target: x=%f y=%f z=%f\n",
 		g.camera.target.x,
 		g.camera.target.y,
 		g.camera.target.z,
 	)
-	sdebugtext.printf(
-		"ent 0: x=%f y=%f z=%f s=%d\n",
-		g.entities[0].position.x,
-		g.entities[0].position.y,
-		g.entities[0].position.z,
-		g.entities[0].vertex_index_start,
-	)
-	sdebugtext.printf(
-		"ent 1: x=%f y=%f z=%f s=%d\n",
-		g.entities[1].position.x,
-		g.entities[1].position.y,
-		g.entities[1].position.z,
-		g.entities[1].vertex_index_start,
-	)
+
+	used := 0
+
+	sg.begin_pass({action = g.sdtx_pass_action, swapchain = sglue.swapchain()})
+	sg.apply_pipeline(g.sdtx_pipeline)
 
 	// TODO: anyway to not do two render-passes per entity, per loop? aren't render passes expensive?
 	for entity in g.entities {
@@ -553,42 +526,37 @@ update_gui :: proc(dt: f32) {
 		case .CAMERA:
 		case .FILE_ENTRY:
 			// NOTE: render file font
-			sg.begin_pass(g.debugtext_pass)
-			sdebugtext.set_context(g.debugtext_ctx)
+			/*
+			sg.begin_pass({action = g.sdtx_pass_action, attachments = g.sdtx_pass_attachments})
+			sdtx.set_context(g.sdtx_ctx)
 
-			sdebugtext.origin(0, 0.5)
-			sdebugtext.font(5)
-			c = convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
-			sdebugtext.color4f(c.r, c.g, c.b, c.a)
-			sdebugtext.printf("%s\n", g.waves[g.playing_index].file_name)
+			sdtx.origin(0, 0.5)
+			sdtx.font(5)
+			c = convert_to_sokol_rgb(ColorTheme[.BASE]) // TODO: get this color looking better somehow
+			sdtx.color4f(c.r, c.g, c.b, c.a)
+			sdtx.printf("%s\n", g.waves[g.playing_index].file_name)
 
-			sdebugtext.draw()
+			sdtx.draw()
 			sg.end_pass() // NOTE: END render file font
+			*/
+
 
 			// NOTE: render geometry
-			sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
-			sg.apply_pipeline(g.pipeline)
+			sg.apply_bindings(g.sdtx_bindings)
 
-			sg.apply_bindings(
-				{
-					images = {shaders.IMG_tex = g.debugtext_image},
-					vertex_buffers = g.bindings.vertex_buffers,
-					index_buffer = g.bindings.index_buffer,
-					samplers = {shaders.SMP_smp = g.sampler},
-				},
-			)
-
-			mvp := compute_mvp(entity.position, w, h)
+			mvp := compute_mvp(entity, w, h)
 			sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
-			sg.draw(entity.vertex_index_start, entity.draw_length, 1)
 
-			sdebugtext.set_context(sdebugtext.default_context())
-			sdebugtext.draw()
-			sg.end_pass() // NOTE: END render geometry
+			sg.draw(0, 6, 1)
+			used += 1
+
 		}
 	}
-	sg.commit()
+	sdtx.set_context(sdtx.default_context())
+	sdtx.draw()
+	sg.end_pass() // NOTE: END render geometry
 
+	sg.commit()
 }
 
 _in_bounds :: proc() {
@@ -602,6 +570,7 @@ _in_bounds :: proc() {
 g_intermediary := false
 
 _move_index :: proc(n: int) {
+	prev_index := g.index
 	g.index += n
 	_in_bounds()
 
@@ -613,17 +582,37 @@ _move_index :: proc(n: int) {
 	// - think of more!
 
 	// NOTE: for now, we just move up and down
-	g.camera.position.y = -CAMERA_TRAVEL * f32(g.index)
+	_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
 }
 
 process_user_input :: proc(dt: f32) {
 	// NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
 
+	// TODO: switch statement instead ??
+
+	if key_down[.BACKSPACE] {
+		// TODO: here for debugging, can remove later
+		_add_camera_position(Vec3{0, 0, -.1})
+	}
+	if key_down[.DELETE] {
+		// TODO: here for debugging, can remove later
+		_add_camera_position(Vec3{0, 0, .1})
+	}
 	if key_down[.DOWN] {
-		g.camera.position.y -= 0.1
+		// TODO: here for debugging, can remove later
+		_add_camera_position(Vec3{0, .1, 0})
 	}
 	if key_down[.UP] {
-		g.camera.position.y += 0.1
+		// TODO: here for debugging, can remove later
+		_add_camera_position(Vec3{0, -.1, 0})
+	}
+	if key_down[.LEFT] {
+		// TODO: here for debugging, can remove later
+		_add_camera_position(Vec3{-.1, 0, 0})
+	}
+	if key_down[.RIGHT] {
+		// TODO: here for debugging, can remove later
+		_add_camera_position(Vec3{.1, 0, 0})
 	}
 
 	if key_down[._0] {
@@ -633,12 +622,18 @@ process_user_input :: proc(dt: f32) {
 
 	if key_down[.U] {
 		// TODO: undo 😱
+		key_down[.U] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 	if (key_down[.LEFT_CONTROL] || key_down[.RIGHT_CONTROL]) && key_down[.R] {
 		// TODO: redo 😱
+		key_down[.LEFT_CONTROL] = false // NOTE: manually disable it so it doesn't keep cutting
+		key_down[.RIGHT_CONTROL] = false // NOTE: manually disable it so it doesn't keep cutting
+		key_down[.R] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
+	// NOTE: $ vim motion
 	if (key_down[.LEFT_SHIFT] || key_down[.RIGHT_SHIFT]) && key_down[._4] {
+		// NOTE: glfw doesn't support the literal '$' key code apparently. I have my $ on shift+0 with firmware remapping, but glfw doesn't care about that
 		g.playing.sample_idx = len(g.playing.samples_raw) - 1
 		key_down[.LEFT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
 		key_down[.RIGHT_SHIFT] = false // NOTE: manually disable it so it doesn't keep cutting
@@ -772,7 +767,7 @@ event :: proc "c" (ev: ^sapp.Event) {
 
 cleanup :: proc "c" () {
 	context = default_context
-	sdebugtext.shutdown()
+	sdtx.shutdown()
 	sa.shutdown()
 	sg.shutdown()
 }

@@ -4,13 +4,13 @@
 @ctype mat4 Mat4
 
 @vs vs
-in vec3 position;
-in vec4 color0;
-in vec2 uv;
-
 layout(binding=0) uniform Vs_Params {
     mat4 mvp;
 };
+
+in vec3 position;
+in vec4 color0;
+in vec2 uv;
 
 out vec4 color;
 out vec2 texcoord;
