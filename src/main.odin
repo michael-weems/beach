@@ -44,16 +44,18 @@ EntityKind :: enum {
 }
 
 Entity :: struct {
-	kind:         EntityKind,
-	position:     Vec3,
-	model_matrix: Mat4,
-	target:       Vec3,
-	velocity:     Vec3, // NOTE: ??
-	acceleration: Vec3, // NOTE: ??
+	kind:              EntityKind,
+	position:          Vec3,
+	animated_position: Vec3,
+	model_matrix:      Mat4,
+	target:            Vec3,
+	rotation:          f32,
+	velocity:          Vec3, // NOTE: ??
+	acceleration:      Vec3, // NOTE: ??
 
 	// File Info
-	file_name:    string,
-	wav_index:    int,
+	file_name:         string,
+	wav_index:         int,
 }
 
 TextRenderDesc :: struct {
@@ -476,7 +478,7 @@ _add_camera_position :: proc(position: Vec3) {
 _set_camera_position :: proc(position: Vec3) {
 	g.camera.position = position
 	g.camera.target = position
-	g.camera.target.z += 1 // NOTE: camera: x: -left and +right, y: -up and +down, z: +forward/zoomin and -backward/zoomout
+	g.camera.target.z += DEPTH_UI // NOTE: camera: x: -left and +right, y: -up and +down, z: +forward/zoomin and -backward/zoomout
 }
 
 fovy := linalg.to_radians(f32(90.0))
@@ -487,12 +489,62 @@ fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
 CAMERA_TRAVEL := 2 * BREADTH_UI
 
-compute_mvp :: proc(position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
+ROTATION_SPEED :: 1.0
+
+rotate_point_around_line :: proc(point, line_point, line_dir: Vec3, angle_radians: f32) -> [3]f32 {
+	// Step 1: Translate so line passes through origin
+	translated_point := point - line_point
+	translated_dir := line_dir // Direction is translation-invariant
+
+	// Step 2: Normalize the direction vector to get the unit axis
+	axis := linalg.normalize(translated_dir)
+
+	// Step 3: Create rotation quaternion from axis-angle
+	// quaternion_angle_axis_f32 returns a quaternion128 {w, x, y, z}
+	quat := linalg.quaternion_angle_axis_f32(angle_radians, axis)
+
+	// Step 4: Rotate the translated point using quaternion multiplication
+	// mul(quat, vec) rotates vec (treats vec as quaternion {0, x, y, z})
+	rotated_translated := linalg.mul(quat, translated_point)
+
+	// Step 5: Translate back
+	return rotated_translated + line_point
+}
+
+compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 
+	v: Mat4
+	if !spinning {
+		v = linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
+		g.camera.animated_position = g.camera.position
+		g.camera.rotation = 0
+	} else {
+		// TODO: rotate the camera + find a better way to create these animations
 
-	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
+		// TODO: rotation not quite working as expected, needs some work
+
+		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
+
+		g.camera.animated_position = rotate_point_around_line(
+			g.camera.animated_position,
+			Vec3{0, 0, DEPTH_UI},
+			g.camera.target,
+			g.camera.rotation,
+		)
+
+		// NOTE: -y == up
+		v =
+			linalg.matrix4_look_at_f32(
+				g.camera.animated_position,
+				g.camera.target,
+				Vec3{0.0, -1.0, 0.0},
+			) *
+			linalg.matrix4_rotate_f32(g.camera.rotation, g.camera.target)
+
+	}
+
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
 	m := linalg.matrix4_translate_f32(position) * mm
@@ -532,16 +584,6 @@ load_image :: proc(filename: cstring) -> sg.Image {
 
 update_gui :: proc(dt: f32) {
 
-	if spinning {
-		/*
-		// TODO: rotate the camera + find a better way to create these animations
-		g.camera.position =
-			linalg.matrix4_rotate_f32(linalg.to_radians(f32(2 * dt)), Vec3{0, 1, 0}) *
-			g.camera.position
-			*/
-
-	}
-
 
 	w := sapp.widthf()
 	h := sapp.heightf()
@@ -568,6 +610,14 @@ update_gui :: proc(dt: f32) {
 		g.camera.target.y,
 		g.camera.target.z,
 	)
+	sdtx.printf(
+		"camera: aniposition: x=%f y=%f z=%f\n",
+		g.camera.animated_position.x,
+		g.camera.animated_position.y,
+		g.camera.animated_position.z,
+	)
+	sdtx.printf("camera: rotation: r=%f\n", g.camera.rotation)
+	sdtx.printf("camera: spinning=%v\n", spinning)
 
 	used := 0
 
@@ -621,7 +671,7 @@ update_gui :: proc(dt: f32) {
 		// NOTE: render geometry
 		sg.apply_bindings(e.bindings)
 
-		mvp := compute_mvp(e.position, e.model_matrix, w, h)
+		mvp := compute_mvp(dt, e.position, e.model_matrix, w, h)
 		sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
 
 		sg.draw(0, 6, 1)
