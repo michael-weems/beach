@@ -530,7 +530,7 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 		g.camera.animated_position = rotate_point_around_line(
 			g.camera.animated_position,
 			Vec3{0, 0, DEPTH_UI},
-			g.camera.target,
+			Vec3{0, 1, DEPTH_UI},
 			g.camera.rotation,
 		)
 
@@ -717,6 +717,10 @@ process_user_input :: proc(dt: f32) {
 	// NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
 
 	// TODO: switch statement instead ??
+
+	if key_down[.PERIOD] {
+		_set_camera_position(Vec3{0, 0, 0})
+	}
 
 	if key_down[.BACKSPACE] {
 		// TODO: here for debugging, can remove later
