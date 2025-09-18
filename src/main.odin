@@ -44,18 +44,17 @@ EntityKind :: enum {
 }
 
 Entity :: struct {
-	kind:              EntityKind,
-	position:          Vec3,
-	animated_position: Vec3,
-	model_matrix:      Mat4,
-	target:            Vec3,
-	rotation:          f32,
-	velocity:          Vec3, // NOTE: ??
-	acceleration:      Vec3, // NOTE: ??
+	kind:         EntityKind,
+	position:     Vec3,
+	model_matrix: Mat4,
+	target:       Vec3,
+	rotation:     f32,
+	velocity:     Vec3, // NOTE: ??
+	acceleration: Vec3, // NOTE: ??
 
 	// File Info
-	file_name:         string,
-	wav_index:         int,
+	file_name:    string,
+	wav_index:    int,
 }
 
 TextRenderDesc :: struct {
@@ -518,7 +517,6 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 	v: Mat4
 	if !spinning {
 		v = linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
-		g.camera.animated_position = g.camera.position
 		g.camera.rotation = 0
 	} else {
 		// TODO: rotate the camera + find a better way to create these animations
@@ -527,8 +525,10 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 
 		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
 
-		g.camera.animated_position = rotate_point_around_line(
-			g.camera.animated_position,
+		// TODO: figure this out!
+
+		g.camera.position = rotate_point_around_line(
+			g.camera.position,
 			Vec3{0, 0, DEPTH_UI},
 			Vec3{0, 1, DEPTH_UI},
 			g.camera.rotation,
@@ -536,11 +536,7 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 
 		// NOTE: -y == up
 		v =
-			linalg.matrix4_look_at_f32(
-				g.camera.animated_position,
-				g.camera.target,
-				Vec3{0.0, -1.0, 0.0},
-			) *
+			linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) *
 			linalg.matrix4_rotate_f32(g.camera.rotation, g.camera.target)
 
 	}
@@ -609,12 +605,6 @@ update_gui :: proc(dt: f32) {
 		g.camera.target.x,
 		g.camera.target.y,
 		g.camera.target.z,
-	)
-	sdtx.printf(
-		"camera: aniposition: x=%f y=%f z=%f\n",
-		g.camera.animated_position.x,
-		g.camera.animated_position.y,
-		g.camera.animated_position.z,
 	)
 	sdtx.printf("camera: rotation: r=%f\n", g.camera.rotation)
 	sdtx.printf("camera: spinning=%v\n", spinning)

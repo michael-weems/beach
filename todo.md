@@ -1,11 +1,14 @@
 # TODO
 
+- [ ] read [this](https://towardsdatascience.com/what-are-intrinsic-and-extrinsic-camera-parameters-in-computer-vision-7071b72fb8ec/)
+- [ ] read [this](https://stevehazen.wordpress.com/2010/02/15/matrix-basics-how-to-step-away-from-storing-an-orientation-as-3-angles/)
 - [x] render all wav files as their own regions
     - [x] figure out why file "cards" are not showing up
     - [x] translate all regions from model view to camera view, stacked vertically on top of each other
     - [x] moving up and down the list should move the regions up and down
 - [ ] render the audio waves!
     - [ ] show a trackbar that iterates through the audio wave
+    - [ ] apply shaders to them, like make it pulse or something cool
 - [ ] fit entire filename on cards
 - [ ] figure out how to render ALL of the file name's text, currently running into a maximum render pass limit
     - time to figure out how to render all text in one pass?
