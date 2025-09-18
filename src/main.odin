@@ -488,58 +488,21 @@ fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
 CAMERA_TRAVEL := 2 * BREADTH_UI
 
-ROTATION_SPEED :: 1.0
-
-rotate_point_around_line :: proc(point, line_point, line_dir: Vec3, angle_radians: f32) -> [3]f32 {
-	// Step 1: Translate so line passes through origin
-	translated_point := point - line_point
-	translated_dir := line_dir // Direction is translation-invariant
-
-	// Step 2: Normalize the direction vector to get the unit axis
-	axis := linalg.normalize(translated_dir)
-
-	// Step 3: Create rotation quaternion from axis-angle
-	// quaternion_angle_axis_f32 returns a quaternion128 {w, x, y, z}
-	quat := linalg.quaternion_angle_axis_f32(angle_radians, axis)
-
-	// Step 4: Rotate the translated point using quaternion multiplication
-	// mul(quat, vec) rotates vec (treats vec as quaternion {0, x, y, z})
-	rotated_translated := linalg.mul(quat, translated_point)
-
-	// Step 5: Translate back
-	return rotated_translated + line_point
-}
+ROTATION_SPEED :: 10.0
 
 compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 
-	v: Mat4
-	if !spinning {
-		v = linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
-		g.camera.rotation = 0
-	} else {
-		// TODO: rotate the camera + find a better way to create these animations
-
-		// TODO: rotation not quite working as expected, needs some work
-
+	if spinning {
 		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
 
-		// TODO: figure this out!
-
-		g.camera.position = rotate_point_around_line(
-			g.camera.position,
-			Vec3{0, 0, DEPTH_UI},
-			Vec3{0, 1, DEPTH_UI},
-			g.camera.rotation,
-		)
-
-		// NOTE: -y == up
-		v =
-			linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) *
-			linalg.matrix4_rotate_f32(g.camera.rotation, g.camera.target)
-
+		g.camera.position.x = linalg.sin(g.camera.rotation) * DEPTH_UI // TODO: want to handle offset? or lock them into the spin coordinates?
+		g.camera.position.z = (linalg.cos(g.camera.rotation) * DEPTH_UI) + DEPTH_UI // TODO: want to handle offset? or lock them into the spin coordinates?
+		g.camera.target.x = 0
+		g.camera.target.z = DEPTH_UI
 	}
+	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
@@ -580,7 +543,6 @@ load_image :: proc(filename: cstring) -> sg.Image {
 
 update_gui :: proc(dt: f32) {
 
-
 	w := sapp.widthf()
 	h := sapp.heightf()
 
@@ -594,6 +556,7 @@ update_gui :: proc(dt: f32) {
 	sdtx.printf("File:     %s\n", g.playing.file_path)
 	sdtx.printf("duration=%s: idx=%d\n", wav.time_string(g.playing.time), g.playing.sample_idx)
 	sdtx.printf("FPS: %f\n", 1 / sapp.frame_duration())
+	sdtx.printf("breadth=%f\n", BREADTH_UI)
 	sdtx.printf(
 		"camera: position: x=%f y=%f z=%f\n",
 		g.camera.position.x,
