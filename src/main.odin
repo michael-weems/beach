@@ -502,6 +502,8 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
 	}
 	if jumping {
+
+		// NOTE: rotate distance
 		distance = Vec3 {
 			distance.x * linalg.sin(g.camera.rotation),
 			0,
@@ -517,29 +519,15 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 		g.camera.target.z = distance.z
 	}
 	if jumping {
-		ground := Vec3 {
-			DEPTH_UI * linalg.sin(g.camera.rotation),
-			0,
-			(DEPTH_UI * linalg.cos(g.camera.rotation)) + 10,
-		}
+
+		ground := _ground()
 
 		invert_z := g.camera.position.z < DEPTH_UI / 2
 		below_ground_z := g.camera.position.z < ground.z
 		if invert_z do below_ground_z = g.camera.position.z > ground.z
 
 		if g.camera.position.x < ground.x || below_ground_z {
-			log.assertf(
-				jumping == false,
-				"px=%f gx=%f, pz=%f gz=%f",
-				g.camera.position.x,
-				ground.x,
-				g.camera.position.z,
-				ground.z,
-			)
-			jumping = false
-			g.camera.velocity = 0.0
-			g.camera.position.x = ground.x
-			g.camera.position.z = ground.y
+			_jump_end()
 		} else {
 			jump_time += dt
 			t := jump_time - jump_start
@@ -553,7 +541,6 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 		}
 	}
 	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
-
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
 	m := linalg.matrix4_translate_f32(position) * mm
@@ -718,7 +705,51 @@ _move_index :: proc(n: int) {
 spinning := false
 jumping := false
 
-GRAVITY: f32 = -2.0
+_jump_start :: proc() {
+	if jumping do return
+
+	jumping = true
+	g.camera.velocity = Vec3 {
+		JUMP_VELOCITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
+		0.0,
+		JUMP_VELOCITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
+	}
+	g.camera.acceleration = Vec3 {
+		GRAVITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
+		0.0,
+		GRAVITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
+	}
+
+	jump_start = 0.0
+	jump_time = 0.0
+}
+
+_ground :: proc() -> Vec3 {
+	return Vec3 {
+		DEPTH_UI * linalg.sin(g.camera.rotation),
+		0,
+		(DEPTH_UI * linalg.cos(g.camera.rotation)) + 10,
+	}
+}
+
+_jump_end :: proc() {
+	if !jumping do return
+
+	jumping = false
+	g.camera.velocity = Vec3{0.0, 0.0, 0.0}
+	g.camera.acceleration = Vec3{0.0, 0.0, 0.0}
+
+	ground := _ground()
+
+	g.camera.position.x = ground.x
+	g.camera.position.z = ground.z
+
+	jump_start = 0.0
+	jump_time = 0.0
+
+}
+
+GRAVITY: f32 = -0.3
 JUMP_VELOCITY: f32 = 6.0
 
 in_air := false
@@ -772,22 +803,7 @@ process_user_input :: proc(dt: f32) {
 		key_down[.Q] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 	if key_down[.A] {
-		if !jumping {
-			jumping = true
-			g.camera.velocity = Vec3 {
-				JUMP_VELOCITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
-				0.0,
-				JUMP_VELOCITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
-			}
-			g.camera.acceleration = Vec3 {
-				GRAVITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
-				0.0,
-				GRAVITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
-			}
-
-			jump_start = 0.0
-			jump_time = 0.0
-		}
+		_jump_start()
 		key_down[.A] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
