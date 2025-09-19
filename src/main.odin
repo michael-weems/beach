@@ -85,9 +85,9 @@ Globals :: struct {
 g: ^Globals
 
 SAMPLE_RATE :: 44100 // NOTE: 44100hz
-DEPTH_UI :: 10 // NOTE: how far from the camera the base UI elements should be
-DEPTH_UI_SURFACE :: 8 // NOTE: how far from the camera the surface UI elements should be
-DEPTH_UI_OVERLAY :: 6 // NOTE: how far from the camera the overlay UI elements should be
+DEPTH_UI :: f32(10.0) // NOTE: how far from the camera the base UI elements should be
+DEPTH_UI_SURFACE :: f32(8.0) // NOTE: how far from the camera the surface UI elements should be
+DEPTH_UI_OVERLAY :: f32(6.0) // NOTE: how far from the camera the overlay UI elements should be
 
 convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
 	return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
@@ -281,6 +281,7 @@ init :: proc "c" () {
 	// v := linalg.matrix4_look_at_f32(g.camera.pos, g.camera.target, {0, 1, 0})
 	g.camera.kind = .CAMERA
 	_set_camera_position(Vec3{0, 0, 0})
+	g.camera.rotation = linalg.to_radians(f32(180.0))
 
 	sg.setup(
 		{
@@ -490,17 +491,66 @@ CAMERA_TRAVEL := 2 * BREADTH_UI
 
 ROTATION_SPEED :: 10.0
 
+distance := Vec3{DEPTH_UI, 0, DEPTH_UI}
+
 compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 
+	// NOTE: compute new states for dependent values
 	if spinning {
 		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
+	}
+	if jumping {
+		distance = Vec3 {
+			distance.x * linalg.sin(g.camera.rotation),
+			0,
+			distance.z * linalg.cos(g.camera.rotation) + distance.z,
+		}
+	}
 
-		g.camera.position.x = linalg.sin(g.camera.rotation) * DEPTH_UI // TODO: want to handle offset? or lock them into the spin coordinates?
-		g.camera.position.z = (linalg.cos(g.camera.rotation) * DEPTH_UI) + DEPTH_UI // TODO: want to handle offset? or lock them into the spin coordinates?
+	// NOTE: compute new camera state
+	if spinning {
+		g.camera.position.x = linalg.sin(g.camera.rotation) * distance.x // TODO: want to handle offset? or lock them into the spin coordinates?
+		g.camera.position.z = (linalg.cos(g.camera.rotation) * distance.z) + distance.z // TODO: want to handle offset? or lock them into the spin coordinates?
 		g.camera.target.x = 0
-		g.camera.target.z = DEPTH_UI
+		g.camera.target.z = distance.z
+	}
+	if jumping {
+		ground := Vec3 {
+			DEPTH_UI * linalg.sin(g.camera.rotation),
+			0,
+			(DEPTH_UI * linalg.cos(g.camera.rotation)) + 10,
+		}
+
+		invert_z := g.camera.position.z < DEPTH_UI / 2
+		below_ground_z := g.camera.position.z < ground.z
+		if invert_z do below_ground_z = g.camera.position.z > ground.z
+
+		if g.camera.position.x < ground.x || below_ground_z {
+			log.assertf(
+				jumping == false,
+				"px=%f gx=%f, pz=%f gz=%f",
+				g.camera.position.x,
+				ground.x,
+				g.camera.position.z,
+				ground.z,
+			)
+			jumping = false
+			g.camera.velocity = 0.0
+			g.camera.position.x = ground.x
+			g.camera.position.z = ground.y
+		} else {
+			jump_time += dt
+			t := jump_time - jump_start
+			g.camera.velocity.x = g.camera.velocity.x + GRAVITY * t
+			g.camera.velocity.z = g.camera.velocity.z + GRAVITY * t
+			vel := g.camera.velocity
+			// TODO: get x sin(rotation) at correct offset to start
+
+			if below_ground_z do vel.z *= -1
+			g.camera.position += Vec3{vel.x, 0, vel.z}
+		}
 	}
 	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
@@ -571,6 +621,7 @@ update_gui :: proc(dt: f32) {
 	)
 	sdtx.printf("camera: rotation: r=%f\n", g.camera.rotation)
 	sdtx.printf("camera: spinning=%v\n", spinning)
+	sdtx.printf("camera: jumping=%v\n", jumping)
 
 	used := 0
 
@@ -665,6 +716,15 @@ _move_index :: proc(n: int) {
 }
 
 spinning := false
+jumping := false
+
+GRAVITY: f32 = -2.0
+JUMP_VELOCITY: f32 = 6.0
+
+in_air := false
+velocity: f32 = 0.0
+jump_start: f32 = 0.0
+jump_time: f32 = 0.0
 
 process_user_input :: proc(dt: f32) {
 	// NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
@@ -673,6 +733,9 @@ process_user_input :: proc(dt: f32) {
 
 	if key_down[.PERIOD] {
 		_set_camera_position(Vec3{0, 0, 0})
+		g.camera.rotation = linalg.to_radians(f32(180.0))
+		spinning = false
+		jumping = false
 	}
 
 	if key_down[.BACKSPACE] {
@@ -702,10 +765,30 @@ process_user_input :: proc(dt: f32) {
 	if key_down[.Q] {
 		if spinning {
 			spinning = false
+			g.camera.rotation = 0
 		} else {
 			spinning = true
 		}
 		key_down[.Q] = false // NOTE: manually disable it so it doesn't keep cutting
+	}
+	if key_down[.A] {
+		if !jumping {
+			jumping = true
+			g.camera.velocity = Vec3 {
+				JUMP_VELOCITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
+				0.0,
+				JUMP_VELOCITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
+			}
+			g.camera.acceleration = Vec3 {
+				GRAVITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
+				0.0,
+				GRAVITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
+			}
+
+			jump_start = 0.0
+			jump_time = 0.0
+		}
+		key_down[.A] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
 	if key_down[._0] {
@@ -893,7 +976,7 @@ main :: proc() {
 			sample_count = 4,
 			width = 1920,
 			height = 1080,
-			window_title = "triangle",
+			window_title = "beach",
 			icon = {sokol_default = true},
 			logger = {func = slog.func},
 		},
