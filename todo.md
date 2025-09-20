@@ -1,5 +1,7 @@
 # TODO
 
+- [ ] tweak the 'j' action y-movement to be less stuttery
+- [ ] convert triangle shader to rectangle shader with rounded edges
 - [ ] read [this](https://towardsdatascience.com/what-are-intrinsic-and-extrinsic-camera-parameters-in-computer-vision-7071b72fb8ec/)
 - [ ] read [this](https://stevehazen.wordpress.com/2010/02/15/matrix-basics-how-to-step-away-from-storing-an-orientation-as-3-angles/)
 - [x] render all wav files as their own regions

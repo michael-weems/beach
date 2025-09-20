@@ -44,17 +44,20 @@ EntityKind :: enum {
 }
 
 Entity :: struct {
-	kind:         EntityKind,
-	position:     Vec3,
-	model_matrix: Mat4,
-	target:       Vec3,
-	rotation:     f32,
-	velocity:     Vec3, // NOTE: ??
-	acceleration: Vec3, // NOTE: ??
+	kind:          EntityKind,
+	position:      Vec3,
+	model_matrix:  Mat4,
+	target:        Vec3,
+	rotation:      f32,
+	speed:         Vec3, // NOTE: to be used in conjunction to feed into velocity
+	acceleration:  Vec3,
+	deceleration:  Vec3,
+	velocity:      Vec3, // NOTE: ??
+	time_dilation: Vec3,
 
 	// File Info
-	file_name:    string,
-	wav_index:    int,
+	file_name:     string,
+	wav_index:     int,
 }
 
 TextRenderDesc :: struct {
@@ -69,18 +72,19 @@ TextRenderDesc :: struct {
 }
 
 Globals :: struct {
-	waves:         [dynamic]wav.Contents,
-	entities:      [dynamic]Entity,
-	vertices:      [dynamic]Vertex,
-	indices:       []u16,
-	playing:       ^wav.Contents,
-	playing_index: int,
-	index:         int,
-	camera:        Entity,
-	pipeline:      sg.Pipeline,
-	pass_action:   sg.Pass_Action,
-	sampler:       sg.Sampler,
-	sdtx:          [EntityKind][dynamic]TextRenderDesc,
+	waves:              [dynamic]wav.Contents,
+	entities:           [dynamic]Entity,
+	vertices:           [dynamic]Vertex,
+	indices:            []u16,
+	playing:            ^wav.Contents,
+	playing_index:      int,
+	index:              int,
+	camera:             Entity,
+	pipeline:           sg.Pipeline,
+	pass_action:        sg.Pass_Action,
+	sampler:            sg.Sampler,
+	sdtx:               [EntityKind][dynamic]TextRenderDesc,
+	disable_animations: bool,
 }
 g: ^Globals
 
@@ -464,12 +468,24 @@ line :: proc(start: Vec2, end: Vec2, color: [4]u8) {
 }
 	*/
 
+pow :: proc {
+	pow_int,
+	pow_f32,
+}
 
-pow :: proc(x, power: int) -> int {
+pow_int :: proc(x, power: int) -> int {
 	result := 1
 	for _ in 0 ..< power do result *= x
 	return result
 }
+
+pow_f32 :: proc(x: f32, power: int) -> f32 {
+	result := f32(1.0)
+	for _ in 0 ..< power do result *= x
+	return result
+}
+
+camera_debug_mode := false
 
 _add_camera_position :: proc(position: Vec3) {
 	_set_camera_position(g.camera.position + position)
@@ -493,61 +509,144 @@ ROTATION_SPEED :: 30.0
 
 camera_update :: proc(dt: f32) {
 	// NOTE: start at base position, then rotate, then translate
-	g.camera.position.x = 0.0
-	g.camera.position.z = 0.0
-	g.camera.target.x = 0.0
-	g.camera.target.z = DEPTH_UI
+	if camera_debug_mode {
+		// NOTE: don't reset in debug mode
+	} else {
+		g.camera.position.x = 0.0
+		g.camera.position.z = 0.0
+		g.camera.target.x = 0.0
+		g.camera.target.z = DEPTH_UI
+	}
 
 	// NOTE: compute new states for dependent values
 	if spinning {
 		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
 	}
 
-	// NOTE: rotate camera
+	// NOTE: rotate camera around z=DEPTH_UI line
 	g.camera.position.x = linalg.sin(g.camera.rotation) * DEPTH_UI
 	g.camera.position.z = (linalg.cos(g.camera.rotation) * DEPTH_UI) + DEPTH_UI
 
-	if jumping {
-		ground := Vec3{g.camera.position.x, g.camera.position.y, g.camera.position.z}
+	// NOTE: translate
 
-		// TODO: do I need this?
-		//invert_z := ground.z < DEPTH_UI / 2 // NOTE: z requires this since it's not centered at 0.0
+	// TODO: do I need this?
+	// NOTE: z requires this since it's not centered at 0.0
+	// TODO: can I just combine all these blocks by just multipling / adding the camera vectors directly?
 
-		// NOTE: translate to jump position
-		g.camera.position.x = g.camera.position.x + g.camera.velocity.x * dt
-		g.camera.position.z = g.camera.position.z + g.camera.velocity.z * dt
+	// NOTE: z
+	{
+		if g.camera.position.z > DEPTH_UI / 2 do g.camera.velocity.z *= -1
 
+		if g.camera.speed.z <= 0.0 {
+			g.camera.time_dilation.z = 0.0
+			g.camera.speed.z = 0.0
+			g.camera.velocity.z = 0.0
+			g.camera.acceleration.z = 0.0
+			g.camera.deceleration.z = 0.0
+		}
 
-		// TODO: something like this?
-		g.camera.velocity.x = g.camera.velocity.x + -GRAVITY * linalg.sin(g.camera.rotation) * dt
-		g.camera.velocity.z = g.camera.velocity.z + -GRAVITY * linalg.cos(g.camera.rotation) * dt
+		g.camera.position.z = g.camera.position.z + (g.camera.velocity.z * dt)
 
-		below_ground_z := g.camera.position.z < ground.z
-		//if invert_z do below_ground_z = g.camera.position.z > ground.z
-		if below_ground_z do g.camera.velocity.z *= -1
+		g.camera.speed.z =
+			g.camera.speed.z + (g.camera.acceleration.z * g.camera.time_dilation.z * dt)
+		g.camera.acceleration.z =
+			g.camera.acceleration.z - (g.camera.deceleration.z * g.camera.time_dilation.z * dt)
 
-		below_ground_x := g.camera.position.x < ground.x
+		switch {
+		case g.camera.acceleration.z > 5.0:
+			g.camera.time_dilation.z = 10.0
+		//case -2.5 < g.camera.acceleration && g.camera.acceleration < 5:
+		//	g.camera.time_dilation = 8.0
+		case g.camera.acceleration.z < 5.0:
+			g.camera.time_dilation.z = 10.0
+			g.camera.deceleration.z = 40.0
+		}
 
-		log.debugf(
-			"px=%f < gx=%f %v: pz=%f < gz=%f %v",
-			g.camera.position.x,
-			ground.x,
-			below_ground_x,
-			g.camera.position.z,
-			ground.z,
-			below_ground_z,
-			//invert_z,
-		)
-
-		// TODO: AND or OR here?
-		if below_ground_x || below_ground_z do _jump_end()
+		g.camera.velocity.z = g.camera.speed.z * linalg.cos(g.camera.rotation)
 	}
+
+	// NOTE: x
+	{
+		if g.camera.speed.x <= 0.0 {
+			g.camera.time_dilation.x = 0.0
+			g.camera.speed.x = 0.0
+			g.camera.velocity.x = 0.0
+			g.camera.acceleration.x = 0.0
+			g.camera.deceleration.x = 0.0
+		}
+
+		g.camera.position.x = g.camera.position.x + (g.camera.velocity.x * dt) // TODO: getting x drift probably due to floating point calculations
+
+		g.camera.speed.x =
+			g.camera.speed.x + (g.camera.acceleration.x * g.camera.time_dilation.x * dt)
+		g.camera.acceleration.x =
+			g.camera.acceleration.x - (g.camera.deceleration.x * g.camera.time_dilation.x * dt)
+
+		switch {
+		case g.camera.acceleration.x > 5.0:
+			g.camera.time_dilation.x = 10.0
+		//case -2.5 < g.camera.acceleration && g.camera.acceleration < 5:
+		//	g.camera.time_dilation = 8.0
+		case g.camera.acceleration.x < 5.0:
+			g.camera.time_dilation.x = 10.0
+			g.camera.deceleration.x = 40.0
+		}
+
+		g.camera.velocity.x = g.camera.speed.x * linalg.sin(g.camera.rotation)
+	}
+
+	// NOTE: y
+	{
+		g.camera.target.y = g.camera.position.y
+		if g.camera.speed.y <= 0.0 {
+			g.camera.time_dilation.y = 0.0
+			g.camera.speed.y = 0.0
+			g.camera.velocity.y = 0.0
+			g.camera.acceleration.y = 0.0
+			g.camera.deceleration.y = 0.0
+		}
+
+		g.camera.position.y = g.camera.position.y + (g.camera.velocity.y * dt) // TODO: getting x drift probably due to floating point calculations
+
+		g.camera.speed.y =
+			g.camera.speed.y + (g.camera.acceleration.y * g.camera.time_dilation.y * dt)
+		g.camera.acceleration.y =
+			g.camera.acceleration.y - (g.camera.deceleration.y * g.camera.time_dilation.y * dt)
+
+		// TODO: how can I apply a dynamic range time-dilation to some translation?
+		switch {
+		case g.camera.acceleration.y > 5.0:
+			g.camera.time_dilation.y = 10.0
+		//case -2.5 < g.camera.acceleration && g.camera.acceleration < 5:
+		//	g.camera.time_dilation = 8.0
+		case g.camera.acceleration.y < 5.0:
+			g.camera.time_dilation.y = 10.0
+			g.camera.deceleration.y = 40.0
+		}
+
+		g.camera.velocity.y = g.camera.speed.y
+	}
+
+	if jumping && (g.camera.speed.x <= 0.0 && g.camera.speed.z <= 0.0) {
+		jumping = false
+	}
+
+	log.debugf(
+		"x=%f z=%f vx=%f vz=%f s=%f a=%f d=%f td=%f",
+		g.camera.position.x,
+		g.camera.position.z,
+		g.camera.velocity.x,
+		g.camera.velocity.z,
+		g.camera.speed,
+		g.camera.acceleration,
+		g.camera.deceleration,
+		g.camera.time_dilation,
+	)
 }
 
 compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
-
 	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
@@ -603,20 +702,31 @@ update_gui :: proc(dt: f32) {
 	sdtx.printf("FPS: %f\n", 1 / sapp.frame_duration())
 	sdtx.printf("breadth=%f\n", BREADTH_UI)
 	sdtx.printf(
-		"camera: position: x=%f y=%f z=%f\n",
+		"cam: position: x=%f y=%f z=%f\n",
 		g.camera.position.x,
 		g.camera.position.y,
 		g.camera.position.z,
 	)
 	sdtx.printf(
-		"camera: target: x=%f y=%f z=%f\n",
+		"cam: target: x=%f y=%f z=%f\n",
 		g.camera.target.x,
 		g.camera.target.y,
 		g.camera.target.z,
 	)
-	sdtx.printf("camera: rotation: r=%f\n", linalg.to_degrees(g.camera.rotation))
-	sdtx.printf("camera: spinning=%v\n", spinning)
-	sdtx.printf("camera: jumping=%v\n", jumping)
+	sdtx.printf(
+		"cam: vel x=%f y=%f z=%f: speed=%f: accel=%f\n",
+		g.camera.velocity.x,
+		g.camera.velocity.y,
+		g.camera.velocity.z,
+		g.camera.speed,
+		g.camera.acceleration,
+	)
+	sdtx.printf(
+		"cam: rotation=%f spin=%v jump=%v\n",
+		linalg.to_degrees(g.camera.rotation),
+		spinning,
+		jumping,
+	)
 
 	camera_update(dt)
 
@@ -697,10 +807,12 @@ _in_bounds :: proc() {
 
 g_intermediary := false
 
-_move_index :: proc(n: int) {
+_move_index :: proc(n: int) -> int {
 	prev_index := g.index
 	g.index += n
 	_in_bounds()
+
+	return prev_index
 
 	// TODO: ideas for animating index movement
 	// - animations disabled: important!
@@ -710,7 +822,7 @@ _move_index :: proc(n: int) {
 	// - think of more!
 
 	// NOTE: for now, we just move up and down
-	_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
+	//_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
 }
 
 spinning := false
@@ -730,16 +842,11 @@ _jump_start :: proc() {
 	if jumping do return
 
 	jumping = true
-	g.camera.velocity = Vec3 {
-		JUMP_VELOCITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
-		0.0,
-		JUMP_VELOCITY * linalg.cos(linalg.to_radians(g.camera.rotation)), // TODO: invert this? cos 180 is -1, but at z=0, negative velocity is correct. idk
-	}
-	g.camera.acceleration = Vec3 {
-		GRAVITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
-		0.0,
-		GRAVITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
-	}
+	g.camera.speed = Vec3{JUMP_VELOCITY, 0, JUMP_VELOCITY}
+	g.camera.acceleration = Vec3{JUMP_ACCELERATION, 0, JUMP_ACCELERATION}
+	g.camera.deceleration = Vec3{GRAVITY, 0, GRAVITY}
+	g.camera.velocity = Vec3{0.0, 0.0, 0.0}
+	g.camera.time_dilation = 4.0
 }
 
 // TODO: when the jump "lands," try "rubber-banding" it. go below the "ground" slightly and rubber-band up a bit
@@ -748,12 +855,16 @@ _jump_end :: proc() {
 	if !jumping do return
 
 	jumping = false
+	g.camera.speed = 0.0
+	g.camera.acceleration = 0.0
+	g.camera.deceleration = 0.0
 	g.camera.velocity = Vec3{0.0, 0.0, 0.0}
-	g.camera.acceleration = Vec3{0.0, 0.0, 0.0}
+	g.camera.time_dilation = 0.0
 }
 
-GRAVITY: f32 = 0.1
-JUMP_VELOCITY: f32 = 10.0
+GRAVITY: f32 = 9.8
+JUMP_VELOCITY: f32 = 40.0
+JUMP_ACCELERATION: f32 = 45.0
 
 in_air := false
 velocity: f32 = 0.0
@@ -793,6 +904,10 @@ process_user_input :: proc(dt: f32) {
 	if key_down[.RIGHT] {
 		// TODO: here for debugging, can remove later
 		_add_camera_position(Vec3{.1, 0, 0})
+	}
+	if key_down[.Z] {
+		// TODO: here for debugging, can remove later
+		camera_debug_mode = !camera_debug_mode
 	}
 	if key_down[.Q] {
 		if spinning {
@@ -859,7 +974,33 @@ process_user_input :: proc(dt: f32) {
 		key_down[.K] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 	if key_down[.J] {
-		_move_index(1)
+		prev_index := _move_index(1)
+
+		// TODO: create equation to get just the right initial velocity + deceleration to move from point a to point b
+		//curr_y=y next_y=CAMERA_TRAVEL * f32(g.index - prev_index)
+
+		//
+
+		// TODO: figure out how to specify how long each animation should take? so that I can sync them up?
+
+		if g.disable_animations {
+			_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
+		} else {
+
+
+			// TODO: fine-tune this so that the 'y' travel is less stuttery and also goes the right distance
+			g.camera.speed = Vec3{JUMP_VELOCITY, 100.0, JUMP_VELOCITY}
+			g.camera.acceleration = Vec3{JUMP_ACCELERATION, 0.0, JUMP_ACCELERATION}
+			g.camera.deceleration = Vec3{GRAVITY, 0.0, GRAVITY}
+			g.camera.velocity = Vec3{0.0, 0.0, 0.0}
+			g.camera.time_dilation = 4.0
+
+			y_time := f32(1.0)
+			g.camera.deceleration.y =
+				(f32(2.0) * (CAMERA_TRAVEL - (g.camera.speed.y * y_time))) / pow(y_time, 2)
+			if g.camera.deceleration.y < 0 do g.camera.deceleration.y *= -1.0
+		}
+
 		key_down[.J] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
