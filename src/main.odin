@@ -489,57 +489,65 @@ fovy_oppo := linalg.to_radians(f32(90.0)) - fovy_half
 BREADTH_UI := (DEPTH_UI * math.sin(fovy_half) / math.sin(fovy_oppo)) - 0.5 // NOTE: a = c * sin(A) / sin(C)
 CAMERA_TRAVEL := 2 * BREADTH_UI
 
-ROTATION_SPEED :: 10.0
+ROTATION_SPEED :: 30.0
 
-distance := Vec3{DEPTH_UI, 0, DEPTH_UI}
-
-compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
-
-	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
+camera_update :: proc(dt: f32) {
+	// NOTE: start at base position, then rotate, then translate
+	g.camera.position.x = 0.0
+	g.camera.position.z = 0.0
+	g.camera.target.x = 0.0
+	g.camera.target.z = DEPTH_UI
 
 	// NOTE: compute new states for dependent values
 	if spinning {
 		g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
 	}
+
+	// NOTE: rotate camera
+	g.camera.position.x = linalg.sin(g.camera.rotation) * DEPTH_UI
+	g.camera.position.z = (linalg.cos(g.camera.rotation) * DEPTH_UI) + DEPTH_UI
+
 	if jumping {
+		ground := Vec3{g.camera.position.x, g.camera.position.y, g.camera.position.z}
 
-		// NOTE: rotate distance
-		distance = Vec3 {
-			distance.x * linalg.sin(g.camera.rotation),
-			0,
-			distance.z * linalg.cos(g.camera.rotation) + distance.z,
-		}
-	}
+		// TODO: do I need this?
+		//invert_z := ground.z < DEPTH_UI / 2 // NOTE: z requires this since it's not centered at 0.0
 
-	// NOTE: compute new camera state
-	if spinning {
-		g.camera.position.x = linalg.sin(g.camera.rotation) * distance.x // TODO: want to handle offset? or lock them into the spin coordinates?
-		g.camera.position.z = (linalg.cos(g.camera.rotation) * distance.z) + distance.z // TODO: want to handle offset? or lock them into the spin coordinates?
-		g.camera.target.x = 0
-		g.camera.target.z = distance.z
-	}
-	if jumping {
+		// NOTE: translate to jump position
+		g.camera.position.x = g.camera.position.x + g.camera.velocity.x * dt
+		g.camera.position.z = g.camera.position.z + g.camera.velocity.z * dt
 
-		ground := _ground()
 
-		invert_z := g.camera.position.z < DEPTH_UI / 2
+		// TODO: something like this?
+		g.camera.velocity.x = g.camera.velocity.x + -GRAVITY * linalg.sin(g.camera.rotation) * dt
+		g.camera.velocity.z = g.camera.velocity.z + -GRAVITY * linalg.cos(g.camera.rotation) * dt
+
 		below_ground_z := g.camera.position.z < ground.z
-		if invert_z do below_ground_z = g.camera.position.z > ground.z
+		//if invert_z do below_ground_z = g.camera.position.z > ground.z
+		if below_ground_z do g.camera.velocity.z *= -1
 
-		if g.camera.position.x < ground.x || below_ground_z {
-			_jump_end()
-		} else {
-			jump_time += dt
-			t := jump_time - jump_start
-			g.camera.velocity.x = g.camera.velocity.x + GRAVITY * t
-			g.camera.velocity.z = g.camera.velocity.z + GRAVITY * t
-			vel := g.camera.velocity
-			// TODO: get x sin(rotation) at correct offset to start
+		below_ground_x := g.camera.position.x < ground.x
 
-			if below_ground_z do vel.z *= -1
-			g.camera.position += Vec3{vel.x, 0, vel.z}
-		}
+		log.debugf(
+			"px=%f < gx=%f %v: pz=%f < gz=%f %v",
+			g.camera.position.x,
+			ground.x,
+			below_ground_x,
+			g.camera.position.z,
+			ground.z,
+			below_ground_z,
+			//invert_z,
+		)
+
+		// TODO: AND or OR here?
+		if below_ground_x || below_ground_z do _jump_end()
 	}
+}
+
+compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
+
+	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
+
 	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
@@ -606,9 +614,11 @@ update_gui :: proc(dt: f32) {
 		g.camera.target.y,
 		g.camera.target.z,
 	)
-	sdtx.printf("camera: rotation: r=%f\n", g.camera.rotation)
+	sdtx.printf("camera: rotation: r=%f\n", linalg.to_degrees(g.camera.rotation))
 	sdtx.printf("camera: spinning=%v\n", spinning)
 	sdtx.printf("camera: jumping=%v\n", jumping)
+
+	camera_update(dt)
 
 	used := 0
 
@@ -654,6 +664,7 @@ update_gui :: proc(dt: f32) {
 		}
 	}
 	*/
+
 
 	// TODO: doing the really dumb thing for now to get this working
 	for i in 0 ..< MAX_PASSES {
@@ -705,6 +716,16 @@ _move_index :: proc(n: int) {
 spinning := false
 jumping := false
 
+spin_start :: proc() {
+	spinning = true
+}
+spin_end :: proc() {
+	spinning = false
+}
+spin_reset :: proc() {
+	g.camera.rotation = linalg.to_radians(f32(180.0))
+}
+
 _jump_start :: proc() {
 	if jumping do return
 
@@ -712,50 +733,30 @@ _jump_start :: proc() {
 	g.camera.velocity = Vec3 {
 		JUMP_VELOCITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
 		0.0,
-		JUMP_VELOCITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
+		JUMP_VELOCITY * linalg.cos(linalg.to_radians(g.camera.rotation)), // TODO: invert this? cos 180 is -1, but at z=0, negative velocity is correct. idk
 	}
 	g.camera.acceleration = Vec3 {
 		GRAVITY * linalg.sin(linalg.to_radians(g.camera.rotation)),
 		0.0,
 		GRAVITY * linalg.cos(linalg.to_radians(g.camera.rotation)),
 	}
-
-	jump_start = 0.0
-	jump_time = 0.0
 }
 
-_ground :: proc() -> Vec3 {
-	return Vec3 {
-		DEPTH_UI * linalg.sin(g.camera.rotation),
-		0,
-		(DEPTH_UI * linalg.cos(g.camera.rotation)) + 10,
-	}
-}
-
+// TODO: when the jump "lands," try "rubber-banding" it. go below the "ground" slightly and rubber-band up a bit
+// TODO: make the jump feel intense, not floaty. Have the landing have impact - possibly have the acceleration change mid-air to make the transition from rise to fall feel "urgent" or weighty. Almost like if you were doing a "butt slam" in Mario
 _jump_end :: proc() {
 	if !jumping do return
 
 	jumping = false
 	g.camera.velocity = Vec3{0.0, 0.0, 0.0}
 	g.camera.acceleration = Vec3{0.0, 0.0, 0.0}
-
-	ground := _ground()
-
-	g.camera.position.x = ground.x
-	g.camera.position.z = ground.z
-
-	jump_start = 0.0
-	jump_time = 0.0
-
 }
 
-GRAVITY: f32 = -0.3
-JUMP_VELOCITY: f32 = 6.0
+GRAVITY: f32 = 0.1
+JUMP_VELOCITY: f32 = 10.0
 
 in_air := false
 velocity: f32 = 0.0
-jump_start: f32 = 0.0
-jump_time: f32 = 0.0
 
 process_user_input :: proc(dt: f32) {
 	// NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
@@ -764,9 +765,9 @@ process_user_input :: proc(dt: f32) {
 
 	if key_down[.PERIOD] {
 		_set_camera_position(Vec3{0, 0, 0})
-		g.camera.rotation = linalg.to_radians(f32(180.0))
-		spinning = false
-		jumping = false
+		spin_end()
+		spin_reset()
+		_jump_end()
 	}
 
 	if key_down[.BACKSPACE] {
@@ -795,10 +796,9 @@ process_user_input :: proc(dt: f32) {
 	}
 	if key_down[.Q] {
 		if spinning {
-			spinning = false
-			g.camera.rotation = 0
+			spin_end()
 		} else {
-			spinning = true
+			spin_start()
 		}
 		key_down[.Q] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
