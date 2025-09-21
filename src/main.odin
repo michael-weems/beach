@@ -269,6 +269,8 @@ init :: proc "c" () {
 	context = default_context
 
 	g = new(Globals)
+	//g.disable_animations = true
+
 	load_dir(process_input.audio_dir)
 	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
 
@@ -597,7 +599,9 @@ camera_update :: proc(dt: f32) {
 
 	// NOTE: y
 	{
-		g.camera.target.y = g.camera.position.y
+		g.camera.target.y = g.camera.position.y // TODO: will want other animations like ease-in-from-right so this won't work
+
+		// TODO: figure out how we can do negatives ie. jump up the list
 		if g.camera.speed.y <= 0.0 {
 			g.camera.time_dilation.y = 0.0
 			g.camera.speed.y = 0.0
@@ -807,12 +811,43 @@ _in_bounds :: proc() {
 
 g_intermediary := false
 
-_move_index :: proc(n: int) -> int {
+_move_index :: proc(n: int) {
 	prev_index := g.index
 	g.index += n
 	_in_bounds()
 
-	return prev_index
+	if g.disable_animations {
+		_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
+	} else {
+		// x = vt + ((at^2) / 2)
+		// a = ((x - vt) * 2) / t^2
+
+		// s=x0+v0t+12at2, v=v0+at
+		t := f32(1.0)
+		y0 := CAMERA_TRAVEL * f32(prev_index)
+		y1 := CAMERA_TRAVEL * f32(g.index - prev_index)
+
+		invert := y1 - y0 < 0
+
+		v0 := JUMP_VELOCITY
+		v1 := f32(0.0)
+		a := (v1 - v0) / t
+
+		if invert {
+			a *= -1.0
+			v0 *= -1.0
+		}
+
+		// TODO: get up and down travel working
+
+		// TODO: fine-tune this so that the 'y' travel is less stuttery and also goes the right distance
+		g.camera.speed = Vec3{JUMP_VELOCITY, v0, JUMP_VELOCITY}
+		g.camera.acceleration = Vec3{JUMP_ACCELERATION, 0.0, JUMP_ACCELERATION}
+		g.camera.deceleration = Vec3{GRAVITY, (v1 - v0) / t, GRAVITY}
+		g.camera.velocity = Vec3{0.0, 0.0, 0.0}
+		g.camera.time_dilation = 4.0
+	}
+
 
 	// TODO: ideas for animating index movement
 	// - animations disabled: important!
@@ -974,7 +1009,7 @@ process_user_input :: proc(dt: f32) {
 		key_down[.K] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 	if key_down[.J] {
-		prev_index := _move_index(1)
+		_move_index(1)
 
 		// TODO: create equation to get just the right initial velocity + deceleration to move from point a to point b
 		//curr_y=y next_y=CAMERA_TRAVEL * f32(g.index - prev_index)
@@ -983,23 +1018,6 @@ process_user_input :: proc(dt: f32) {
 
 		// TODO: figure out how to specify how long each animation should take? so that I can sync them up?
 
-		if g.disable_animations {
-			_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
-		} else {
-
-
-			// TODO: fine-tune this so that the 'y' travel is less stuttery and also goes the right distance
-			g.camera.speed = Vec3{JUMP_VELOCITY, 100.0, JUMP_VELOCITY}
-			g.camera.acceleration = Vec3{JUMP_ACCELERATION, 0.0, JUMP_ACCELERATION}
-			g.camera.deceleration = Vec3{GRAVITY, 0.0, GRAVITY}
-			g.camera.velocity = Vec3{0.0, 0.0, 0.0}
-			g.camera.time_dilation = 4.0
-
-			y_time := f32(1.0)
-			g.camera.deceleration.y =
-				(f32(2.0) * (CAMERA_TRAVEL - (g.camera.speed.y * y_time))) / pow(y_time, 2)
-			if g.camera.deceleration.y < 0 do g.camera.deceleration.y *= -1.0
-		}
 
 		key_down[.J] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
