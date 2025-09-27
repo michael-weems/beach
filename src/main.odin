@@ -10,6 +10,8 @@ import "core:log"
 import "core:math"
 import "core:math/fixed"
 import "core:math/linalg"
+import "core:mem"
+import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -44,20 +46,24 @@ EntityKind :: enum {
 }
 
 Entity :: struct {
-	kind:          EntityKind,
-	position:      Vec3,
-	model_matrix:  Mat4,
-	target:        Vec3,
-	rotation:      f32,
-	speed:         Vec3, // NOTE: to be used in conjunction to feed into velocity
-	acceleration:  Vec3,
-	deceleration:  Vec3,
-	velocity:      Vec3, // NOTE: ??
-	time_dilation: Vec3,
+	kind:               EntityKind,
+	position:           Vec3,
+	temp_position:      Vec3,
+	model_matrix:       Mat4,
+	target:             Vec3,
+	rotation:           f32,
+	speed:              Vec3, // NOTE: to be used in conjunction to feed into velocity
+	speed_invert:       [3]bool, // NOTE: to be used in conjunction to feed into velocity
+	acceleration:       Vec3,
+	delta_acceleration: Vec3,
+	velocity:           Vec3, // NOTE: ??
+	time_warp:          Vec3,
+	animation_queues:   [dynamic][]Animation,
+	animation_len:      int,
 
 	// File Info
-	file_name:     string,
-	wav_index:     int,
+	file_name:          string,
+	wav_index:          int,
 }
 
 TextRenderDesc :: struct {
@@ -270,6 +276,12 @@ init :: proc "c" () {
 
 	g = new(Globals)
 	//g.disable_animations = true
+
+	animation_arena_err := virtual.arena_init_growing(&animation_arena)
+	log.assertf(animation_arena_err == .None, "could not create arena")
+	animation_allocator = virtual.arena_allocator(&animation_arena)
+
+	// TODO: setup odin lsp config to disable odin format on hard-coded slices / arrays and log statements
 
 	load_dir(process_input.audio_dir)
 	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
@@ -495,6 +507,7 @@ _add_camera_position :: proc(position: Vec3) {
 
 _set_camera_position :: proc(position: Vec3) {
 	g.camera.position = position
+	g.camera.temp_position = position
 	g.camera.target = position
 	g.camera.target.z += DEPTH_UI // NOTE: camera: x: -left and +right, y: -up and +down, z: +forward/zoomin and -backward/zoomout
 }
@@ -509,7 +522,9 @@ CAMERA_TRAVEL := 2 * BREADTH_UI
 
 ROTATION_SPEED :: 30.0
 
+// TODO: super jank - sometimes does the y-movement and sometimes doesn't
 camera_update :: proc(dt: f32) {
+	log.debug("trace -> camera_update")
 	// NOTE: start at base position, then rotate, then translate
 	if camera_debug_mode {
 		// NOTE: don't reset in debug mode
@@ -531,127 +546,13 @@ camera_update :: proc(dt: f32) {
 
 	// NOTE: translate
 
-	// TODO: do I need this?
-	// NOTE: z requires this since it's not centered at 0.0
-	// TODO: can I just combine all these blocks by just multipling / adding the camera vectors directly?
-
-	// NOTE: z
-	{
-		if g.camera.position.z > DEPTH_UI / 2 do g.camera.velocity.z *= -1
-
-		if g.camera.speed.z <= 0.0 {
-			g.camera.time_dilation.z = 0.0
-			g.camera.speed.z = 0.0
-			g.camera.velocity.z = 0.0
-			g.camera.acceleration.z = 0.0
-			g.camera.deceleration.z = 0.0
-		}
-
-		g.camera.position.z = g.camera.position.z + (g.camera.velocity.z * dt)
-
-		g.camera.speed.z =
-			g.camera.speed.z + (g.camera.acceleration.z * g.camera.time_dilation.z * dt)
-		g.camera.acceleration.z =
-			g.camera.acceleration.z - (g.camera.deceleration.z * g.camera.time_dilation.z * dt)
-
-		switch {
-		case g.camera.acceleration.z > 5.0:
-			g.camera.time_dilation.z = 10.0
-		//case -2.5 < g.camera.acceleration && g.camera.acceleration < 5:
-		//	g.camera.time_dilation = 8.0
-		case g.camera.acceleration.z < 5.0:
-			g.camera.time_dilation.z = 10.0
-			g.camera.deceleration.z = 40.0
-		}
-
-		g.camera.velocity.z = g.camera.speed.z * linalg.cos(g.camera.rotation)
-	}
-
-	// NOTE: x
-	{
-		if g.camera.speed.x <= 0.0 {
-			g.camera.time_dilation.x = 0.0
-			g.camera.speed.x = 0.0
-			g.camera.velocity.x = 0.0
-			g.camera.acceleration.x = 0.0
-			g.camera.deceleration.x = 0.0
-		}
-
-		g.camera.position.x = g.camera.position.x + (g.camera.velocity.x * dt) // TODO: getting x drift probably due to floating point calculations
-
-		g.camera.speed.x =
-			g.camera.speed.x + (g.camera.acceleration.x * g.camera.time_dilation.x * dt)
-		g.camera.acceleration.x =
-			g.camera.acceleration.x - (g.camera.deceleration.x * g.camera.time_dilation.x * dt)
-
-		switch {
-		case g.camera.acceleration.x > 5.0:
-			g.camera.time_dilation.x = 10.0
-		//case -2.5 < g.camera.acceleration && g.camera.acceleration < 5:
-		//	g.camera.time_dilation = 8.0
-		case g.camera.acceleration.x < 5.0:
-			g.camera.time_dilation.x = 10.0
-			g.camera.deceleration.x = 40.0
-		}
-
-		g.camera.velocity.x = g.camera.speed.x * linalg.sin(g.camera.rotation)
-	}
-
-	// NOTE: y
-	{
-		g.camera.target.y = g.camera.position.y // TODO: will want other animations like ease-in-from-right so this won't work
-
-		// TODO: figure out how we can do negatives ie. jump up the list
-		if g.camera.speed.y <= 0.0 {
-			g.camera.time_dilation.y = 0.0
-			g.camera.speed.y = 0.0
-			g.camera.velocity.y = 0.0
-			g.camera.acceleration.y = 0.0
-			g.camera.deceleration.y = 0.0
-		}
-
-		g.camera.position.y = g.camera.position.y + (g.camera.velocity.y * dt) // TODO: getting x drift probably due to floating point calculations
-
-		g.camera.speed.y =
-			g.camera.speed.y + (g.camera.acceleration.y * g.camera.time_dilation.y * dt)
-		g.camera.acceleration.y =
-			g.camera.acceleration.y - (g.camera.deceleration.y * g.camera.time_dilation.y * dt)
-
-		// TODO: how can I apply a dynamic range time-dilation to some translation?
-		switch {
-		case g.camera.acceleration.y > 5.0:
-			g.camera.time_dilation.y = 10.0
-		//case -2.5 < g.camera.acceleration && g.camera.acceleration < 5:
-		//	g.camera.time_dilation = 8.0
-		case g.camera.acceleration.y < 5.0:
-			g.camera.time_dilation.y = 10.0
-			g.camera.deceleration.y = 40.0
-		}
-
-		g.camera.velocity.y = g.camera.speed.y
-	}
-
-	if jumping && (g.camera.speed.x <= 0.0 && g.camera.speed.z <= 0.0) {
-		jumping = false
-	}
-
-	log.debugf(
-		"x=%f z=%f vx=%f vz=%f s=%f a=%f d=%f td=%f",
-		g.camera.position.x,
-		g.camera.position.z,
-		g.camera.velocity.x,
-		g.camera.velocity.z,
-		g.camera.speed,
-		g.camera.acceleration,
-		g.camera.deceleration,
-		g.camera.time_dilation,
-	)
+	process_animation_list(dt, &g.camera)
 }
 
 compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Vs_Params {
 
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
-	v := linalg.matrix4_look_at_f32(g.camera.position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
+	v := linalg.matrix4_look_at_f32(g.camera.temp_position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
 	// NOTE: T * R * S --> Scale, then rotate, then translate
 	m := linalg.matrix4_translate_f32(position) * mm
@@ -725,12 +626,7 @@ update_gui :: proc(dt: f32) {
 		g.camera.speed,
 		g.camera.acceleration,
 	)
-	sdtx.printf(
-		"cam: rotation=%f spin=%v jump=%v\n",
-		linalg.to_degrees(g.camera.rotation),
-		spinning,
-		jumping,
-	)
+	sdtx.printf("cam: rotation=%f spin=%v\n", linalg.to_degrees(g.camera.rotation), spinning)
 
 	camera_update(dt)
 
@@ -757,27 +653,6 @@ update_gui :: proc(dt: f32) {
 
 	sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
 	sg.apply_pipeline(g.pipeline)
-
-	/*
-	for entity in g.entities {
-		switch entity.kind {
-		case .CAMERA:
-		case .FILE_ENTRY:
-			// NOTE: render geometry
-			sg.apply_bindings(g.sdtx_bindings)
-
-			// TODO: doing the really dumb thing for now to get this working
-
-
-			mvp := compute_mvp(entity, w, h)
-			sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
-
-			sg.draw(0, 6, 1)
-			used += 1
-
-		}
-	}
-	*/
 
 
 	// TODO: doing the really dumb thing for now to get this working
@@ -811,41 +686,165 @@ _in_bounds :: proc() {
 
 g_intermediary := false
 
+AnimationKind :: enum {
+	Constant_Acceleration,
+	Non_Constant_Acceleration,
+	Linear,
+	// TODO: for now just lerp, no other animation kinds
+}
+
+Animation :: struct {
+	kind:         AnimationKind,
+	duration:     f32, // NOTE: seconds, eg. 1.5
+	progress:     f32, // NOTE: 0.0 <= progress <= 1.0
+	max_progress: f32, // NOTE: unset (eg. 0.0) maps to 1.0, but a way to do partial animations
+	cancelled:    bool,
+	target:       Vec3, // NOTE: abs pos
+	a:            Vec3,
+	_v0:          Vec3,
+}
+
+animation_update :: proc(dt: f32, anime: Animation, pos0: Vec3) -> Vec3 {
+
+	#partial switch anime.kind {
+	case .Constant_Acceleration:
+		// NOTE: enable passing in custom acceleration but manually set the initial velocity
+
+		v0 := (anime.target - pos0 - (anime.a * pow(anime.duration, 2)) / 2.0) / anime.duration
+
+		t := anime.progress * anime.duration
+		return pos0 + v0 * t + (anime.a * pow(anime.duration, 2)) / 2.0
+	/*
+	case .Non_Constant_Acceleration:
+		return linalg.lerp(pos0, anime.target, anime.progress)
+	case .Linear:
+		return linalg.lerp(pos0, anime.target, anime.progress)
+	case:
+		return linalg.lerp(pos0, anime.target, anime.progress)
+		*/
+	}
+	return Vec3{}
+}
+
+process_animation_list :: proc(dt: f32, entity: ^Entity) {
+	if entity.animation_len == 0 do return
+
+	still_processing := false
+	pos := entity.position
+
+	// TODO: use range iteration when the animation queue memory issues are figured out
+	for queue_index in 0 ..< entity.animation_len {
+		for index in 0 ..< len(entity.animation_queues[queue_index]) {
+			log.assertf(
+				entity.animation_queues[queue_index][index].kind == .Constant_Acceleration,
+				"entity animation has invalid memory %v",
+				entity.animation_queues[queue_index][index].kind,
+			)
+			log.debugf("using %v", entity.animation_queues[queue_index][index].kind)
+
+			if entity.animation_queues[queue_index][index].cancelled do continue
+
+			if entity.animation_queues[queue_index][index].progress <
+			   entity.animation_queues[queue_index][index].max_progress {
+				percent_complete := dt / entity.animation_queues[queue_index][index].duration
+				entity.animation_queues[queue_index][index].progress += percent_complete
+				// NOTE: still report out the final calculated position even when the animation is complete
+			}
+
+			pos = animation_update(dt, entity.animation_queues[queue_index][index], pos)
+
+			if entity.animation_queues[queue_index][index].progress >= entity.animation_queues[queue_index][index].max_progress do continue
+
+			still_processing = true
+			break
+		}
+	}
+
+	if still_processing {
+		entity.temp_position = pos
+		entity.target = pos
+		entity.target = Vec3{0.0, pos.y, DEPTH_UI}
+		return
+	}
+
+	log.assert(false, "not processing for some reason")
+	entity.position = pos // NOTE: finalize the changes
+	entity.temp_position = entity.position
+	entity.target = entity.position
+	entity.target = Vec3{0.0, entity.position.y, DEPTH_UI}
+	reset_animations(entity)
+	return
+}
+
+reset_animations :: proc(entity: ^Entity) {
+	entity.animation_queues = [dynamic][]Animation{}
+	entity.animation_len = 0
+}
+
+animation_arena: virtual.Arena
+animation_allocator: mem.Allocator
+
+push_animation :: proc(entity: ^Entity, anime: []Animation) {
+	err: mem.Allocator_Error
+	if len(entity.animation_queues) == 0 {
+		entity.animation_queues, err = make([dynamic][]Animation, 100, animation_allocator)
+		log.assertf(err == .None, "could not allocate big block of animations")
+	}
+
+	// NOTE: cancel any previous animations
+	for &anime_queue in entity.animation_queues {
+		for &a in anime_queue {
+			if a.progress < a.max_progress do a.cancelled = true
+		}
+	}
+
+	for &a in anime {
+		if a.max_progress == 0.0 do a.max_progress = 1.0
+	}
+
+
+	if entity.animation_len != 100 {
+		entity.animation_queues[entity.animation_len] = new_clone(anime, animation_allocator)^
+		entity.animation_len += 1
+	}
+}
+
+
 _move_index :: proc(n: int) {
 	prev_index := g.index
 	g.index += n
 	_in_bounds()
+	if g.index == prev_index do return
+
+	target := Vec3{0.0, -(CAMERA_TRAVEL * f32(g.index)), 0.0}
 
 	if g.disable_animations {
-		_add_camera_position(Vec3{0, CAMERA_TRAVEL * f32(g.index - prev_index), 0})
+		_add_camera_position(target)
 	} else {
 		// x = vt + ((at^2) / 2)
 		// a = ((x - vt) * 2) / t^2
 
 		// s=x0+v0t+12at2, v=v0+at
-		t := f32(1.0)
-		y0 := CAMERA_TRAVEL * f32(prev_index)
-		y1 := CAMERA_TRAVEL * f32(g.index - prev_index)
 
-		invert := y1 - y0 < 0
-
-		v0 := JUMP_VELOCITY
-		v1 := f32(0.0)
-		a := (v1 - v0) / t
-
-		if invert {
-			a *= -1.0
-			v0 *= -1.0
+		anime := []Animation {
+			{
+				// NOTE: jump in the air and end at high-point
+				kind         = .Constant_Acceleration,
+				target       = target,
+				a            = Vec3{0.0, 0.0, -GRAVITY},
+				duration     = 0.4,
+				max_progress = 0.5,
+			},
+			{
+				// NOTE: fall from high-point at higher initial-velocity
+				kind     = .Constant_Acceleration,
+				target   = target,
+				a        = Vec3{0.0, 0.0, -GRAVITY},
+				duration = 0.1,
+			},
 		}
 
-		// TODO: get up and down travel working
-
-		// TODO: fine-tune this so that the 'y' travel is less stuttery and also goes the right distance
-		g.camera.speed = Vec3{JUMP_VELOCITY, v0, JUMP_VELOCITY}
-		g.camera.acceleration = Vec3{JUMP_ACCELERATION, 0.0, JUMP_ACCELERATION}
-		g.camera.deceleration = Vec3{GRAVITY, (v1 - v0) / t, GRAVITY}
-		g.camera.velocity = Vec3{0.0, 0.0, 0.0}
-		g.camera.time_dilation = 4.0
+		push_animation(&g.camera, anime)
 	}
 
 
@@ -861,40 +860,9 @@ _move_index :: proc(n: int) {
 }
 
 spinning := false
-jumping := false
 
-spin_start :: proc() {
-	spinning = true
-}
-spin_end :: proc() {
-	spinning = false
-}
 spin_reset :: proc() {
 	g.camera.rotation = linalg.to_radians(f32(180.0))
-}
-
-_jump_start :: proc() {
-	if jumping do return
-
-	jumping = true
-	g.camera.speed = Vec3{JUMP_VELOCITY, 0, JUMP_VELOCITY}
-	g.camera.acceleration = Vec3{JUMP_ACCELERATION, 0, JUMP_ACCELERATION}
-	g.camera.deceleration = Vec3{GRAVITY, 0, GRAVITY}
-	g.camera.velocity = Vec3{0.0, 0.0, 0.0}
-	g.camera.time_dilation = 4.0
-}
-
-// TODO: when the jump "lands," try "rubber-banding" it. go below the "ground" slightly and rubber-band up a bit
-// TODO: make the jump feel intense, not floaty. Have the landing have impact - possibly have the acceleration change mid-air to make the transition from rise to fall feel "urgent" or weighty. Almost like if you were doing a "butt slam" in Mario
-_jump_end :: proc() {
-	if !jumping do return
-
-	jumping = false
-	g.camera.speed = 0.0
-	g.camera.acceleration = 0.0
-	g.camera.deceleration = 0.0
-	g.camera.velocity = Vec3{0.0, 0.0, 0.0}
-	g.camera.time_dilation = 0.0
 }
 
 GRAVITY: f32 = 9.8
@@ -911,9 +879,10 @@ process_user_input :: proc(dt: f32) {
 
 	if key_down[.PERIOD] {
 		_set_camera_position(Vec3{0, 0, 0})
-		spin_end()
+		spinning = false
 		spin_reset()
-		_jump_end()
+		reset_animations(&g.camera)
+
 	}
 
 	if key_down[.BACKSPACE] {
@@ -945,16 +914,8 @@ process_user_input :: proc(dt: f32) {
 		camera_debug_mode = !camera_debug_mode
 	}
 	if key_down[.Q] {
-		if spinning {
-			spin_end()
-		} else {
-			spin_start()
-		}
+		spinning = !spinning
 		key_down[.Q] = false // NOTE: manually disable it so it doesn't keep cutting
-	}
-	if key_down[.A] {
-		_jump_start()
-		key_down[.A] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
 	if key_down[._0] {
@@ -1010,15 +971,6 @@ process_user_input :: proc(dt: f32) {
 	}
 	if key_down[.J] {
 		_move_index(1)
-
-		// TODO: create equation to get just the right initial velocity + deceleration to move from point a to point b
-		//curr_y=y next_y=CAMERA_TRAVEL * f32(g.index - prev_index)
-
-		//
-
-		// TODO: figure out how to specify how long each animation should take? so that I can sync them up?
-
-
 		key_down[.J] = false // NOTE: manually disable it so it doesn't keep cutting
 	}
 
@@ -1118,9 +1070,12 @@ event :: proc "c" (ev: ^sapp.Event) {
 
 cleanup :: proc "c" () {
 	context = default_context
+	// TODO: cleanup or no? it's already cleaned up by the OS on process close, right?
+	/*
 	sdtx.shutdown()
 	sa.shutdown()
 	sg.shutdown()
+	*/
 }
 
 ProcessInput :: struct {
@@ -1132,6 +1087,8 @@ process_input: ^ProcessInput
 main :: proc() {
 	context.logger = log.create_console_logger()
 	default_context = context
+
+	// TODO: setup tracking allocator in debug mode
 
 	process_input = new(ProcessInput)
 
