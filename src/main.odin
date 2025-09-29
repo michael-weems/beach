@@ -303,7 +303,6 @@ init :: proc "c" () {
 
 	sg.setup(
 		{
-			max_dispatch_calls_per_pass = 1000,
 			buffer_pool_size = 1000,
 			pipeline_pool_size = 1000,
 			image_pool_size = 1000,
@@ -331,7 +330,7 @@ init :: proc "c" () {
 		},
 	)
 
-	sgl.setup({pipeline_pool_size = 1000, logger = {func = slog.func}})
+	sgl.setup({pipeline_pool_size = 90, logger = {func = slog.func}})
 
 	sapp.show_mouse(false)
 	sapp.lock_mouse(true)
@@ -388,7 +387,7 @@ init :: proc "c" () {
 
 		e.image = sg.make_image(
 			{
-				usage = {render_attachment = true},
+				usage = {resolve_attachment = true},
 				width = 32,
 				height = 32,
 				pixel_format = .RGBA8,
@@ -396,7 +395,9 @@ init :: proc "c" () {
 			},
 		)
 
-		e.pass_attachments = sg.make_attachments({colors = {0 = {image = e.image}}})
+		e.pass_attachments = sg.Attachments {
+			colors = {0 = sg.View(e.image)},
+		}
 
 		// NOTE: this *should* set the background color for the part the text will show up on
 		// TODO: change this to .SURFACE or .OVERLAY
@@ -425,8 +426,8 @@ init :: proc "c" () {
 
 		log.assertf(len(g.waves) > 1, "len g.waves <= 1")
 
-		e.bindings.images = {
-			shaders.IMG_tex = e.image,
+		e.bindings.views = {
+			shaders.VIEW_tex = sg.View(e.image),
 		}
 
 		e.bindings.samplers = {
@@ -574,12 +575,10 @@ load_image :: proc(filename: cstring) -> sg.Image {
 		height = h,
 		pixel_format = .RGBA8,
 		data = {
-			subimage = {
+			mip_levels = {
 				0 = {
-					0 = {
-						ptr  = pixels,
-						size = uint(w * h * 4), // 4 bytes per pixel
-					},
+					ptr  = pixels,
+					size = uint(w * h * 4), // 4 bytes per pixel
 				},
 			},
 		},
@@ -634,9 +633,11 @@ update_gui :: proc(dt: f32) {
 
 	MAX_PASSES := 5
 
+	/*
 	for i in 0 ..< MAX_PASSES {
 		e := &g.sdtx[.FILE_ENTRY][i]
 		// NOTE: render file font
+		log.debugf("begin_pass: render text")
 		sg.begin_pass({action = e.pass_action, attachments = e.pass_attachments})
 		sdtx.set_context(e.ctx)
 
@@ -649,11 +650,12 @@ update_gui :: proc(dt: f32) {
 		sdtx.draw()
 		sg.end_pass() // NOTE: END render file font
 	}
-
+	*/
 
 	sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
 	sg.apply_pipeline(g.pipeline)
 
+	/*
 
 	// TODO: doing the really dumb thing for now to get this working
 	for i in 0 ..< MAX_PASSES {
@@ -667,6 +669,7 @@ update_gui :: proc(dt: f32) {
 
 		sg.draw(0, 6, 1)
 	}
+	*/
 
 
 	sdtx.set_context(sdtx.default_context())
