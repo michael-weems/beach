@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 
-shader_bindings=$(find . -name '*_glsl.odin')
-for binding in "${shader_bindings[@]}"; do
-	echo "rm -fr $binding"
-	# TODO:
-done
+shader_bindings=$(find . -name '*_glsl.odin' | xargs -I {} rm -f {})
 
 shaders=$(find ./src -name '*.glsl')
 for shader in "${shaders[@]}"; do
@@ -17,6 +13,6 @@ for shader in "${shaders[@]}"; do
 	fi
 done
 
-[ -f beach ] && rm beach
+test -f beach && rm beach
 odin build ./src -debug -out:beach
 ./beach ./assets/audio

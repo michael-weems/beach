@@ -1,6 +1,7 @@
 package wav
 
 import "base:intrinsics"
+import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:math"
@@ -159,9 +160,9 @@ validate_contents :: proc(wav: Contents) -> (FileErrors, bool) {
 	return errs, valid
 }
 
-read_from_file :: proc(file_path: string, contents: ^Contents) {
-	file_data, ok := os.read_entire_file(file_path)
-	if !ok {
+read_from_file :: proc(file_path: string, contents: ^Contents, allocator: runtime.Allocator) {
+	file_data, ferr := os.read_entire_file_or_err(file_path)
+	if ferr != nil {
 		log.fatal("could not read: ", file_path)
 		return
 	}

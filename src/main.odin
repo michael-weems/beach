@@ -211,11 +211,11 @@ index_registry := [EntityKind]EntityIndex {
 	.FILE_ENTRY = {start = 0, len = 6},
 }
 
-load_dir :: proc(dir: string) {
+load_dir :: proc(dir: string, allocator: runtime.Allocator) {
 	fd, err := os.open(dir)
 	log.assertf(err == nil, "open dir: %s: %v", dir, err)
 
-	entries, read_err := os.read_dir(fd, 1000)
+	entries, read_err := os.read_dir(fd, 1000, allocator)
 	log.assertf(read_err == nil, "read dir: %s: %v", dir, read_err)
 	log.assertf(len(entries) > 0, "no files found in dir: %s: %v", dir, read_err)
 
@@ -231,7 +231,7 @@ load_dir :: proc(dir: string) {
 		if !strings.contains(e.name, ".wav") do continue
 
 		append(&g.waves, wav.Contents{file_path = e.fullpath})
-		wav.read_from_file(e.fullpath, &g.waves[index])
+		wav.read_from_file(e.fullpath, &g.waves[index], context.allocator)
 		errs, valid := wav.validate_contents(g.waves[index])
 		if !valid {
 			delete(g.waves[index].samples_raw)
@@ -283,7 +283,7 @@ init :: proc "c" () {
 
 	// TODO: setup odin lsp config to disable odin format on hard-coded slices / arrays and log statements
 
-	load_dir(process_input.audio_dir)
+	load_dir(process_input.audio_dir, context.allocator)
 	log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
 
 	vertices := file_name_vertices()
