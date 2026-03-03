@@ -275,7 +275,7 @@ init :: proc "c" () {
 	context = default_context
 
 	g = new(Globals)
-	//g.disable_animations = true
+	g.disable_animations = true
 
 	animation_arena_err := virtual.arena_init_growing(&animation_arena)
 	log.assertf(animation_arena_err == .None, "could not create arena")
@@ -522,6 +522,11 @@ CAMERA_TRAVEL := 2 * BREADTH_UI
 
 ROTATION_SPEED :: 30.0
 
+// NOTE: COORDINATES
+// NOTE: left <- -x, +x -> right
+// NOTE: up   <- -y, +y -> down
+// NOTE: out  <- -z, +z -> in
+
 // TODO: super jank - sometimes does the y-movement and sometimes doesn't
 camera_update :: proc(dt: f32) {
 	log.debug("trace -> camera_update")
@@ -554,6 +559,7 @@ compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shader
 	p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 100.0)
 	v := linalg.matrix4_look_at_f32(g.camera.temp_position, g.camera.target, Vec3{0.0, -1.0, 0.0}) // NOTE: -y == up
 
+	// NOTE: transformations happen right-to-left
 	// NOTE: T * R * S --> Scale, then rotate, then translate
 	m := linalg.matrix4_translate_f32(position) * mm
 
@@ -573,16 +579,8 @@ load_image :: proc(filename: cstring) -> sg.Image {
 		width = w,
 		height = h,
 		pixel_format = .RGBA8,
-		data = {
-			subimage = {
-				0 = {
-					0 = {
-						ptr  = pixels,
-						size = uint(w * h * 4), // 4 bytes per pixel
-					},
-				},
-			},
-		},
+		// 4 bytes per pixel
+		data = {subimage = {0 = {0 = {ptr = pixels, size = uint(w * h * 4)}}}},
 	},
 	)
 	stbi.image_free(pixels)
