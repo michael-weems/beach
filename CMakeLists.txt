@@ -2,18 +2,17 @@ cmake_minimum_required(VERSION 4.0)
 project(beach)
 
 add_executable(beach
-   PUBLIC FILE_SET HEADERS
-   BASE_DIRS ./src
+   ./src/main.cpp
    ./src/main.hpp
    ./src/ansi_colors.hpp
-   ./src/wav.hpp
-
-   PRIVATE
-   ./src/main.cpp
    ./src/wav.cpp
+   ./src/wav.hpp
+)
+target_include_directories(beach PUBLIC
+   ./src
 )
 
-target_set_properties(beach PROPERTIES
+set_target_properties(beach PROPERTIES
    OUTPUT_NAME "bin/beach$<$<CONFIG:Debug>:d>"
 )
 

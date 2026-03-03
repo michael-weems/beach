@@ -1,5 +1,7 @@
 # binary output
 beach
+bin/
+build/
 
 # generated shader bindings for odin
 *_glsl.odin
