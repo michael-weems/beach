@@ -89,6 +89,9 @@ namespace wav
            int32_t sample_length;
    }
 
+   const int32_t AUDIO_FREQ = 44100;
+   const int16_t AUDIO_CHANNELS = 2;
+
    const std::string ID_RIFF = "RIFF";
    const std::string ID_WAVE = "WAVE";
 
@@ -104,7 +107,7 @@ namespace wav
         int32_ti chunk_size: i32; // (4 bytes) : SampledData size
    }
 
-   struct contents 
+   struct wav 
    {
 	// config
 	int16_t channels;
@@ -124,17 +127,9 @@ namespace wav
 	pcm_format_header format;
 
 	std::chrono time;
-   }
 
-   const int32_t AUDIO_FREQ = 44100;
-   const int16_t AUDIO_CHANNELS = 2;
-
-   struct file_errors 
-   {
-      bool has_errors;
-      std::string frequency;
-      std::string channels;
-      std::string sokol;
+        bool has_errors;
+        std::vector<std::string> errors;
    }
 
 }

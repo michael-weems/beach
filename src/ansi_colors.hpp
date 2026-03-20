@@ -15,6 +15,10 @@ inline std::string red(std::string_view text)
 {
    return std::format("{}{}{}", RED, text, UNSET);
 }
+inline std::string green(std::string_view text)
+{
+   return std::format("{}{}{}", GREEN, text, UNSET);
+}
 
 };
 #endif

@@ -1,6 +1,8 @@
 #include "wav.hpp"
+#include "ctx.hpp"
 
 #include "ansi_colors.hpp"
+#include "log.hpp"
 
 #include <string>
 #include <format>
@@ -9,52 +11,62 @@
 
 namespace wav
 {
-   file_errors validate_file_contents(contents wav)
+   bool is_valid(wav& wav)
    {
-      file_errors errs;
-
       switch (wav.frequency) 
       {
          case 0:
-            errs.has_errors = true;
-            errs.frequency = std::format("error: file {}: missing frequency", wav.file_path);
+         {
+            wav.has_errors = true;
+            wav.errors.push_back(std::format("error: file {}: missing frequency", wav.file_path));
             break;
-      
+         }
          case AUDIO_FREQ:
-            errs.frequency = std::format(
+         {
+            wav.has_errors = true;
+            wav.errors.push_back(std::format(
                  "warn : file {}: possible frequency mismatch: expected {}: received {}",
                  wav.file_path,
                  AUDIO_FREQ,
                  wav.frequency,
-            );
+            ));
             break;
-        }
+         }
+      }
 
       switch (wav.channels) 
       {
          case 0:
-            errs.has_errors = false;
-            errs.channels = std::format("error: file {}: missing channels", wav.file_path);
+         {
+            wav.has_errors = false;
+            wav.errors.push_back(std::format("error: file {}: missing channels", wav.file_path));
             break;
+         }
          case AUDIO_CHANNELS:
-            errs.channels = std::format(
+         {
+            wav.has_errors = false;
+            wav.errors.push_back(std::format(
                     "warn : file {}: possible frequency mismatch: expected {}: received {}",
                     wav.file_path,
                     AUDIO_CHANNELS,
                     wav.channels,
-            );
+            ));
             break;
-        }
+         }
+       }
 
-        return errs;
+      return wav.has_errors;;
    }
 
-   void load_file(std::string file_path, Contents *contents, Allocator *allocator) 
+   error load_from_file(ctx::ctx *ctx, std::string file_path, wav *contents) 
    {
+      error e{};
+
       std::ifstream input_file_stream(file_path, std::ios::in | std::ios::binary);
       if (!input_file_stream) {
-         std::cerr << ansi_color::red("Error: ") << "opening file!" << std::endl;
-         return; // TODO: report errors out
+         e.has_error = true;
+         e.msg = "open file: " + file_path;
+         return e;
       }
 /* TODO: close file and all that
     // Check if the loop terminated due to end-of-file (EOF) or another error
@@ -71,26 +83,24 @@ namespace wav
       contents->file_path = file_path;
       //contents->file_name = filepath.short_stem(file_path); // TODO: cpp version of getting just file name
 
-      log.debugf("wav file: %s", contents.file_path)
+      log.debug("debug: wav file: " + contents.file_path);
 
-      offset := 0
+      int offset = 0;
 
-      riff_header riff;
-      pcm_format_header format;
-      ieee_format_header ieee_format;
-      fact_header fact;
-      wave_data_header data;
+      riff_header riff{};
+      pcm_format_header format{};
+      ieee_format_header ieee_format{};
+      fact_header fact{};
+      wave_data_header data{};
 
-     intrinsics.mem_copy(&riff, &file_data[offset], size_of(RiffHeader))
-     offset += size_of(RiffHeader)
+      intrinsics.mem_copy(&riff, &file_data[offset], size_of(RiffHeader))
+      offset += size_of(RiffHeader)
 
-   assert(("invalid .wav file, bytes 0-3 should spell 'RIFF'", 
-      strings.clone_from_bytes(riff.file_type_bloc_id[:]) == ID_RIFF
-   ));
-     log.assert(
-             strings.clone_from_bytes(riff.file_type_bloc_id[:]) == "RIFF", // RIFF header
-             "Invalid .wav file, bytes 0-3 should spell 'RIFF'",
-     )
+      log.assert(
+         // TODO: string compare
+         strings.clone_from_bytes(riff.file_type_bloc_id[:]) == "RIFF", // RIFF header
+         "invalid .wav file, bytes 0-3 should spell 'RIFF'"
+      );
      log.assert(
              strings.clone_from_bytes(riff.file_format_id[:]) == "WAVE",
              "Invalid .wav file, bytes 8-11 should spell 'WAVE'",

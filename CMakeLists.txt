@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 4.0)
 project(beach)
 
 add_executable(beach
+   ./src/allocator.hpp
+   ./src/ctx.cpp
+   ./src/ctx.hpp
    ./src/main.cpp
    ./src/main.hpp
    ./src/ansi_colors.hpp
