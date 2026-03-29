@@ -13,6 +13,6 @@ namespace files
       std::string msg;
    }
 
-   error bytes_in_directory(std::filesystem::path filepath, std::uintmax_t *out_size)
+   error sizeof_directory(std::filesystem::path filepath, std::uintmax_t *out_size)
 };
 #endif // FILES_HPP

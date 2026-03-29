@@ -62,7 +62,7 @@ namespace wav
    {
       error e{};
 
-      std::ifstream input_file_stream(file_path, std::ios::in | std::ios::binary);
+      sc++ read in tightly packed binary filetd::ifstream input_file_stream(file_path, std::ios::in | std::ios::binary);
       if (!input_file_stream) {
          e.has_error = true;
          e.msg = "open file: " + file_path;
@@ -101,14 +101,14 @@ namespace wav
          strings.clone_from_bytes(riff.file_type_bloc_id[:]) == "RIFF", // RIFF header
          "invalid .wav file, bytes 0-3 should spell 'RIFF'"
       );
-     log.assert(
-             strings.clone_from_bytes(riff.file_format_id[:]) == "WAVE",
-             "Invalid .wav file, bytes 8-11 should spell 'WAVE'",
-     )
-     log.assert(
-             offset < len(file_data),
-             fmt.aprint("offset %d >= len(file_data) %d", offset, len(file_data)),
-     )
+      log.assert(
+         strings.clone_from_bytes(riff.file_format_id[:]) == "WAVE",
+         "Invalid .wav file, bytes 8-11 should spell 'WAVE'",
+      )
+      log.assert(
+         offset < len(file_data),
+         fmt.aprint("offset %d >= len(file_data) %d", offset, len(file_data)),
+      )
 
      for offset < len(file_data) {
              // TODO: get this to read the file properly

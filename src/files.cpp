@@ -5,7 +5,7 @@
 
 namespace files
 {
-   error bytes_in_directory(std::filesystem::path filepath, std::uintmax_t *out_size)
+   error sizeof_directory(std::filesystem::path filepath, std::uintmax_t *out_size)
    {
       error e{};
 
@@ -25,5 +25,7 @@ namespace files
          e.has_error = true;
          e.msg = "filesystem: " + e.what();
       }
+
+      return e;
    }
 };
