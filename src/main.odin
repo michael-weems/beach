@@ -16,13 +16,13 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:time"
-import sapp "shared:sokol/app"
-import sa "shared:sokol/audio"
-import sdtx "shared:sokol/debugtext"
-import sg "shared:sokol/gfx"
-import sgl "shared:sokol/gl"
-import sglue "shared:sokol/glue"
-import slog "shared:sokol/log"
+import sapp "../sokol/app"
+import sa "../sokol/audio"
+import sdtx "../sokol/debugtext"
+import sg "../sokol/gfx"
+import sgl "../sokol/gl"
+import sglue "../sokol/glue"
+import slog "../sokol/log"
 import stbi "vendor:stb/image"
 
 default_context: runtime.Context
@@ -227,7 +227,8 @@ load_dir :: proc(dir: string, allocator: runtime.Allocator) {
 	// NOTE: process files
 	index := 0
 	for e in entries {
-		if e.is_dir do continue
+		is_dir := os.is_directory(e.fullpath)
+		if is_dir do continue
 		if !strings.contains(e.name, ".wav") do continue
 
 		append(&g.waves, wav.Contents{file_path = e.fullpath})

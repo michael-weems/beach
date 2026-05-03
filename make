@@ -13,6 +13,11 @@ for shader in "${shaders[@]}"; do
 	fi
 done
 
+bin=beach
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	bin="beach.exe"
+fi
+
 test -f beach && rm beach
-odin build ./src -debug -out:beach
-./beach ./assets/audio
+odin build ./src -debug -out:${bin}
+./${bin} ./assets/audio

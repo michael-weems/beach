@@ -161,7 +161,7 @@ validate_contents :: proc(wav: Contents) -> (FileErrors, bool) {
 }
 
 read_from_file :: proc(file_path: string, contents: ^Contents, allocator: runtime.Allocator) {
-	file_data, ferr := os.read_entire_file_or_err(file_path)
+	file_data, ferr := os.read_entire_file_from_path(file_path, context.allocator)
 	if ferr != nil {
 		log.fatal("could not read: ", file_path)
 		return
