@@ -19,5 +19,7 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; t
 fi
 
 test -f beach && rm beach
-odin build ./src -debug -out:${bin}
+#odin build ./src -debug -out:${bin}
+odin build ./src -collection:sokol=$HOME/vendor/odin-sokol/sokol -debug -out:${bin}
+
 ./${bin} ./assets/audio
