@@ -14,12 +14,14 @@ for shader in "${shaders[@]}"; do
 done
 
 bin=beach
+collection_path="$HOME/vendor/odin-sokol/sokol"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-	bin="beach.exe"
+   bin="beach.exe"
+   collection_path="$HOME/projects/sokol-odin/sokol"
 fi
 
 test -f beach && rm beach
 #odin build ./src -debug -out:${bin}
-odin build ./src -collection:sokol=$HOME/vendor/odin-sokol/sokol -debug -out:${bin}
+odin build ./src -collection:sokol=${collection_path} -debug -out:${bin}
 
 ./${bin} ./assets/audio
