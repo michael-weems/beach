@@ -288,8 +288,6 @@ init :: proc "c" ()
   log.assertf(animation_arena_err == .None, "could not create arena")
   animation_allocator = virtual.arena_allocator(&animation_arena)
 
-  // TODO: setup odin lsp config to disable odin format on hard-coded slices / arrays and log statements
-
   load_dir(process_input.audio_dir, context.allocator)
   log.assertf(len(&g.waves) > 0, "no wav files found in dir: %s", process_input.audio_dir)
 

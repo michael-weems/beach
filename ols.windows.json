@@ -1,7 +1,7 @@
 {
 	"$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
 	"collections": [
-		{ "name": "sokol", "path": "/c/Users/mweem/sokol-odin/sokol" }
+		{ "name": "sokol", "path": "/c/Users/mweem/projects/beach/sokol" }
 	],
 	"enable_semantic_tokens": false,
 	"enable_document_symbols": true,
