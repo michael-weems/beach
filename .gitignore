@@ -2,6 +2,8 @@
 beach
 bin/
 build/
+*.exe
+*.pdb
 
 # generated shader bindings for odin
 *_glsl.odin
