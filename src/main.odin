@@ -73,6 +73,7 @@ TextRenderDesc :: struct {
   ctx:              sdtx.Context,
   bindings:         sg.Bindings,
   image:            sg.Image,
+  view:             sg.View,
   pass_action:      sg.Pass_Action,
   pass_attachments: sg.Attachments,
 }
@@ -348,7 +349,7 @@ init :: proc "c" ()
   // create a shader and pipeline object (default render states are fine for triangle)
   g.pipeline = sg.make_pipeline(
   {
-    shader = sg.make_shader(shaders.triangle_shader_desc(sg.query_backend())),
+    shader = sg.make_shader(shaders.dbgtext_shader_desc(sg.query_backend())),
     index_type = .UINT16,
     depth = {
       write_enabled = true, // always write to depth buffer
@@ -356,9 +357,9 @@ init :: proc "c" ()
     },
     layout = {
       attrs = {
-        shaders.ATTR_triangle_position = {format = .FLOAT3},
-        shaders.ATTR_triangle_color0 = {format = .FLOAT4},
-        shaders.ATTR_triangle_uv = {format = .FLOAT2},
+        shaders.ATTR_dbgtext_pos = {format = .FLOAT3},
+        shaders.ATTR_dbgtext_color0 = {format = .FLOAT4},
+        shaders.ATTR_dbgtext_uv = {format = .FLOAT2},
       },
     },
   },
@@ -390,13 +391,14 @@ init :: proc "c" ()
 
     e.image = sg.make_image(
       {
-        usage = {resolve_attachment = true},
+        usage = {color_attachment = true},
         width = 32,
         height = 32,
         pixel_format = .RGBA8,
         sample_count = 1,
       },
     )
+    e.view = sg.make_view({color_attachment = {image = e.image, mip_level = 0}})
 
     // NOTE: this *should* set the background color for the part the text will show up on
     // TODO: change this to .SURFACE or .OVERLAY
@@ -417,7 +419,7 @@ init :: proc "c" ()
     log.assertf(len(g.waves) > 1, "len g.waves <= 1")
 
     e.bindings.views = {
-      shaders.VIEW_tex = sg.View(e.image),
+      shaders.VIEW_tex = e.view,
     }
 
     e.bindings.samplers = {
@@ -637,7 +639,17 @@ update_gui :: proc(dt: f32)
   for i in 0 ..< MAX_PASSES {
     e := &g.sdtx[.FILE_ENTRY][i]
     // NOTE: render file font
-    sg.begin_pass({action = e.pass_action, attachments = e.pass_attachments})
+    sg.begin_pass(
+      {
+        action = {
+          colors = {
+            0 = {load_action = .CLEAR, clear_value = convert_to_sokol_rgb(ColorTheme[.BASE])},
+          },
+        },
+        attachments = {colors = {0 = e.view}},
+      },
+    )
+
     sdtx.set_context(e.ctx)
 
     sdtx.origin(0, 0.5)
@@ -661,9 +673,10 @@ update_gui :: proc(dt: f32)
 
     // NOTE: render geometry
     sg.apply_bindings(e.bindings)
+    // TODO: bindings requires a texture view? check logs
 
     mvp := compute_mvp(dt, e.position, e.model_matrix, w, h)
-    sg.apply_uniforms(shaders.UB_Vs_Params, sg_range(&mvp))
+    sg.apply_uniforms(shaders.UB_vs_params, sg_range(&mvp))
 
     sg.draw(0, 6, 1)
   }

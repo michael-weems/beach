@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+shader_bindings=$(find . -name '*_glsl.odin' | xargs -I {} rm -f {})
+
+while IFS= read -r -d '' shader; do
+   name=$(basename -- "$shader" .glsl)
+   dir=$(dirname $shader)
+
+   shader=$(echo "${shader}")
+
+   echo "sokol-shdc -i '${shader}' -o '${dir}/${name}_glsl.odin' -f sokol_odin -l hlsl5"
+   sokol-shdc -i "${shader}" -o "${dir}/${name}_glsl.odin" -f sokol_odin -l hlsl5
+   #sokol-shdc -i "$shader" -o "${dir}/${name}_glsl.odin" -f sokol_odin -l glsl430
+   if [ $? != 0 ];then
+      echo "[error]: $shader"
+      exit 1
+   fi
+
+done < <(find ./src -type f -name "*.glsl" -print0)
+
