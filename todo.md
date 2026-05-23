@@ -11,6 +11,8 @@ vim motions for delete / yank / paste, etc...
 
 ## Tasks
 
+- [ ] highlight currently hovered card
+    - [ ] highlight differently currently playing card
 - [ ] setup odin lsp config to disable odin format on hard-coded slices / arrays and log statements
 - [ ] tweak the 'j' action y-movement to be less stuttery
 - [ ] convert triangle shader to rectangle shader with rounded edges
