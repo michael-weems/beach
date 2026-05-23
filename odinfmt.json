@@ -4,7 +4,7 @@
    "newline_limit": 2,
    "tabs": false,
    "tabs_width": 2,
-   "brace_style": "K_And_R",
+   "brace_style": "1TBS",
    "indent_cases": false,
    "sort_imports": true,
    "inline_single_stmt_case": true,

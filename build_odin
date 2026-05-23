@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
-export bin=beach
+export bin=./bin/beach
 export collection_path="$HOME/vendor/odin-sokol/sokol"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-   export bin="beach.exe"
+   export bin="./bin/beach.exe"
    export collection_path="$HOME/projects/sokol-odin/sokol"
 fi
 
-test -f beach && rm beach
+test -d bin && rm -fr ./bin
+mkdir -p bin
 #odin build ./src -debug -out:${bin}
 odin build ./src -collection:sokol=${collection_path} -debug -out:${bin}

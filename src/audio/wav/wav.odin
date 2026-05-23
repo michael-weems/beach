@@ -33,58 +33,58 @@ import "core:strings"
 
 // https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/WAVE/WAVE.html
 RiffHeader :: struct #packed {
-	file_type_bloc_id: [4]u8, // (4 bytes) : Identifier « RIFF »  (0x52, 0x49, 0x46, 0x46)
-	file_size:         i32, // (4 bytes) : Overall file size minus 8 bytes
-	file_format_id:    [4]u8, // (4 bytes) : Format = « WAVE »  (0x57, 0x41, 0x56, 0x45)
+  file_type_bloc_id: [4]u8, // (4 bytes) : Identifier « RIFF »  (0x52, 0x49, 0x46, 0x46)
+  file_size:         i32, // (4 bytes) : Overall file size minus 8 bytes
+  file_format_id:    [4]u8, // (4 bytes) : Format = « WAVE »  (0x57, 0x41, 0x56, 0x45)
 }
 
 PcmFormatHeader :: struct #packed {
-	chunk_id:        [4]u8, // (4 bytes) : Identifier « fmt␣ »  (0x66, 0x6D, 0x74, 0x20)
-	chunk_size:      i32, // (4 bytes) : Chunk size minus 8 bytes, which is 16 bytes here  (0x10)
-	audio_format:    i16, // (2 bytes) : Audio format (1: PCM integer, 3: IEEE 754 float)
-	channels:        i16, // (2 bytes) : Number of channels
-	frequency:       i32, // (4 bytes) : Sample rate (in hertz)
-	byte_per_sec:    i32, // (4 bytes) : Number of bytes to read per second (Frequency * BytePerBloc).
-	byte_per_bloc:   i16, // (2 bytes) : Number of bytes per block (NbrChannels * BitsPerSample / 8).
-	bits_per_sample: i16, // (2 bytes) : Number of bits per sample
+  chunk_id:        [4]u8, // (4 bytes) : Identifier « fmt␣ »  (0x66, 0x6D, 0x74, 0x20)
+  chunk_size:      i32, // (4 bytes) : Chunk size minus 8 bytes, which is 16 bytes here  (0x10)
+  audio_format:    i16, // (2 bytes) : Audio format (1: PCM integer, 3: IEEE 754 float)
+  channels:        i16, // (2 bytes) : Number of channels
+  frequency:       i32, // (4 bytes) : Sample rate (in hertz)
+  byte_per_sec:    i32, // (4 bytes) : Number of bytes to read per second (Frequency * BytePerBloc).
+  byte_per_bloc:   i16, // (2 bytes) : Number of bytes per block (NbrChannels * BitsPerSample / 8).
+  bits_per_sample: i16, // (2 bytes) : Number of bits per sample
 }
 
 ExtFormatHeader :: struct #packed {
-	chunk_id:              [4]u8, // (4 bytes) : Identifier « fmt␣ »  (0x66, 0x6D, 0x74, 0x20)
-	chunk_size:            i32, // (4 bytes) : Chunk size minus 8 bytes, which is 16 bytes here  (0x10)
-	audio_format:          i16, // (2 bytes) : Audio format (1: PCM integer, 3: IEEE 754 float)
-	channels:              i16, // (2 bytes) : Number of channels
-	frequency:             i32, // (4 bytes) : Sample rate (in hertz)
-	byte_per_sec:          i32, // (4 bytes) : Number of bytes to read per second (Frequency * BytePerBloc).
-	byte_per_bloc:         i16, // (2 bytes) : Number of bytes per block (NbrChannels * BitsPerSample / 8).
-	bits_per_sample:       i16, // (2 bytes) : Number of bits per sample
-	ext_size:              i16,
-	valid_bits_per_sample: i16, // 8 * M
-	channel_mask:          i32, // speaker position mask
-	sub_format:            [16]u8, // GUID
+  chunk_id:              [4]u8, // (4 bytes) : Identifier « fmt␣ »  (0x66, 0x6D, 0x74, 0x20)
+  chunk_size:            i32, // (4 bytes) : Chunk size minus 8 bytes, which is 16 bytes here  (0x10)
+  audio_format:          i16, // (2 bytes) : Audio format (1: PCM integer, 3: IEEE 754 float)
+  channels:              i16, // (2 bytes) : Number of channels
+  frequency:             i32, // (4 bytes) : Sample rate (in hertz)
+  byte_per_sec:          i32, // (4 bytes) : Number of bytes to read per second (Frequency * BytePerBloc).
+  byte_per_bloc:         i16, // (2 bytes) : Number of bytes per block (NbrChannels * BitsPerSample / 8).
+  bits_per_sample:       i16, // (2 bytes) : Number of bits per sample
+  ext_size:              i16,
+  valid_bits_per_sample: i16, // 8 * M
+  channel_mask:          i32, // speaker position mask
+  sub_format:            [16]u8, // GUID
 }
 
 IeeeFormatHeader :: struct #packed {
-	chunk_id:        [4]u8, // (4 bytes) : Identifier « fmt␣ »  (0x66, 0x6D, 0x74, 0x20)
-	chunk_size:      i32, // (4 bytes) : Chunk size minus 8 bytes, which is 16 bytes here  (0x10)
-	audio_format:    i16, // (2 bytes) : Audio format (1: PCM integer, 3: IEEE 754 float)
-	channels:        i16, // (2 bytes) : Number of channels
-	frequency:       i32, // (4 bytes) : Sample rate (in hertz)
-	byte_per_sec:    i32, // (4 bytes) : Number of bytes to read per second (Frequency * BytePerBloc).
-	byte_per_bloc:   i16, // (2 bytes) : Number of bytes per block (NbrChannels * BitsPerSample / 8).
-	bits_per_sample: i16, // (2 bytes) : Number of bits per sample
-	ext_size:        i16, // 0
+  chunk_id:        [4]u8, // (4 bytes) : Identifier « fmt␣ »  (0x66, 0x6D, 0x74, 0x20)
+  chunk_size:      i32, // (4 bytes) : Chunk size minus 8 bytes, which is 16 bytes here  (0x10)
+  audio_format:    i16, // (2 bytes) : Audio format (1: PCM integer, 3: IEEE 754 float)
+  channels:        i16, // (2 bytes) : Number of channels
+  frequency:       i32, // (4 bytes) : Sample rate (in hertz)
+  byte_per_sec:    i32, // (4 bytes) : Number of bytes to read per second (Frequency * BytePerBloc).
+  byte_per_bloc:   i16, // (2 bytes) : Number of bytes per block (NbrChannels * BitsPerSample / 8).
+  bits_per_sample: i16, // (2 bytes) : Number of bits per sample
+  ext_size:        i16, // 0
 }
 
 ChunkHeader :: struct #packed {
-	chunk_id:   [4]u8, // (4 bytes) : Identifier « data »  (0x64, 0x61, 0x74, 0x61)
-	chunk_size: i32, // (4 bytes) : SampledData size
+  chunk_id:   [4]u8, // (4 bytes) : Identifier « data »  (0x64, 0x61, 0x74, 0x61)
+  chunk_size: i32, // (4 bytes) : SampledData size
 }
 
 FactHeader :: struct #packed {
-	chunk_id:      [4]u8,
-	chunk_size:    i32,
-	sample_length: i32,
+  chunk_id:      [4]u8,
+  chunk_size:    i32,
+  sample_length: i32,
 }
 
 WAVE_FORMAT_PCM :: i16(1)
@@ -94,26 +94,63 @@ WAVE_FORMAT_MULAW :: i16(7)
 //WAVE_FORMAT_EXTENSIBLE :: i16(0xFFFE)
 
 WaveDataHeader :: struct #packed {
-	chunk_id:   [4]u8, // (4 bytes) : Identifier « data »  (0x64, 0x61, 0x74, 0x61)
-	chunk_size: i32, // (4 bytes) : SampledData size
+  chunk_id:   [4]u8, // (4 bytes) : Identifier « data »  (0x64, 0x61, 0x74, 0x61)
+  chunk_size: i32, // (4 bytes) : SampledData size
 }
 
-Contents :: struct {
-	// config
-	channels:    i16,
-	frequency:   i32,
-	// state
-	sample_idx:  int,
-	is_playing:  bool,
-	// data
-	samples_raw: []f32,
-	samples:     ^f32,
-	// metadata
-	file_path:   string,
-	file_name:   string,
-	format:      PcmFormatHeader,
-	time:        Time,
+// TODO: pre-allocate a buffer for all "Wav" to live in based on the directory size?
+// TODO: will need to adjust it based on other factors like edits and additions
+Wav :: struct {
+  // config
+  channels:     i16,
+  frequency:    i32,
+  // state
+  is_valid:     bool,
+  frame_cursor: f64,
+  is_playing:   bool,
+  // data
+  num_samples:  i32, // TODO: possible overflow?
+  samples_raw:  []f32,
+  samples:      ^f32,
+  // metadata
+  file_path:    string,
+  file_name:    string,
+  format:       PcmFormatHeader,
+  time:         Time,
 }
+
+start_over :: proc(w: ^Wav) {
+  w.frame_cursor = 0
+}
+go_to_end :: proc(w: ^Wav) {
+  total := i32(w.num_samples / i32(w.channels))
+  w.frame_cursor = f64(total_frames(w) - 1)
+}
+toggle_playing :: proc(w: ^Wav) {
+  w.is_playing = !w.is_playing
+}
+pause :: proc(w: ^Wav) {
+  w.is_playing = false
+}
+play :: proc(w: ^Wav) {
+  w.is_playing = true
+}
+
+total_frames :: proc(w: ^Wav) -> i32 {
+  return w.num_samples / i32(w.channels)
+}
+scan_backward :: proc(w: ^Wav, seconds: f64 = 2) {
+  w.frame_cursor -= f64(w.frequency) * seconds
+  if w.frame_cursor < 0 do w.frame_cursor = 0
+}
+scan_forward :: proc(w: ^Wav, seconds: f64 = 2) {
+  frame_count := f64(total_frames(w))
+  if w.frame_cursor >= frame_count {
+    w.frame_cursor = frame_count - f64(w.frequency)
+    if w.frame_cursor < 0 do w.frame_cursor = 0 // file shorter than 1 sec
+  }
+}
+
 
 AUDIO_FREQ := i32(44100)
 AUDIO_CHANNELS := i16(2)
@@ -121,117 +158,121 @@ AUDIO_CHANNELS := i16(2)
 // NOTE: ----------------------------------------------
 
 FileErrors :: struct {
-	frequency: string,
-	channels:  string,
-	sokol:     string,
+  frequency: string,
+  channels:  string,
+  sokol:     string,
 }
 
 @(require_results)
-validate_contents :: proc(wav: Contents) -> (FileErrors, bool) {
-	errs: FileErrors
-	valid := true
+validate :: proc(wav: ^Wav) -> FileErrors {
+  errs: FileErrors
 
-	switch wav.frequency {
-	case 0:
-		valid = false
-		errs.frequency = fmt.aprintf("error: file %s: missing frequency", wav.file_path)
-	case AUDIO_FREQ:
-		errs.frequency = fmt.aprintf(
-			"warn : file %s: possible frequency mismatch: expected %f: received %f",
-			wav.file_path,
-			AUDIO_FREQ,
-			wav.frequency,
-		)
-	}
+  wav.is_valid = true
 
-	switch wav.channels {
-	case 0:
-		valid = false
-		errs.channels = fmt.aprintf("error: file %s: missing channels", wav.file_path)
-	case AUDIO_CHANNELS:
-		errs.channels = fmt.aprintf(
-			"warn : file %s: possible frequency mismatch: expected %f: received %f",
-			wav.file_path,
-			AUDIO_CHANNELS,
-			wav.channels,
-		)
-	}
+  switch wav.frequency {
+  case 0:
+    wav.is_valid = false
+    errs.frequency = fmt.aprintf("error: file %s: missing frequency", wav.file_path)
+    break
+  case AUDIO_FREQ:
+    errs.frequency = fmt.aprintf(
+      "warn : file %s: possible frequency mismatch: expected %f: received %f",
+      wav.file_path,
+      AUDIO_FREQ,
+      wav.frequency,
+    )
+    break
+  }
 
-	return errs, valid
+  switch wav.channels {
+  case 0:
+    wav.is_valid = false
+    errs.channels = fmt.aprintf("error: file %s: missing channels", wav.file_path)
+    break
+  case AUDIO_CHANNELS:
+    errs.channels = fmt.aprintf(
+      "warn : file %s: possible frequency mismatch: expected %f: received %f",
+      wav.file_path,
+      AUDIO_CHANNELS,
+      wav.channels,
+    )
+    break
+  }
+
+  return errs
 }
 
-read_from_file :: proc(file_path: string, contents: ^Contents, allocator: runtime.Allocator) {
-	file_data, ferr := os.read_entire_file_from_path(file_path, context.allocator)
-	if ferr != nil {
-		log.fatal("could not read: ", file_path)
-		return
-	}
-	contents.file_path = file_path
-	contents.file_name = filepath.short_stem(file_path)
+// TODO: write_to_file procedure to take an in-memory wav file and write it to disk
+read_from_file :: proc(wave: ^Wav, allocator: runtime.Allocator) {
+  file_data, ferr := os.read_entire_file_from_path(wave.file_path, context.allocator)
+  if ferr != nil {
+    log.fatal("could not read: ", wave.file_path)
+    return
+  }
 
-	log.debugf("wav file: %s", contents.file_path)
+  log.debugf("wav file: %s", wave.file_path)
 
-	offset := 0
+  offset := 0
 
-	riff: RiffHeader
-	format: PcmFormatHeader
-	ieee_format: IeeeFormatHeader
-	fact: FactHeader
-	data: WaveDataHeader
+  riff: RiffHeader
+  format: PcmFormatHeader
+  ieee_format: IeeeFormatHeader
+  fact: FactHeader
+  data: WaveDataHeader
 
-	intrinsics.mem_copy(&riff, &file_data[offset], size_of(RiffHeader))
-	offset += size_of(RiffHeader)
+  intrinsics.mem_copy(&riff, &file_data[offset], size_of(RiffHeader))
+  offset += size_of(RiffHeader)
 
-	log.assert(
-		strings.clone_from_bytes(riff.file_type_bloc_id[:]) == "RIFF", // RIFF header
-		"Invalid .wav file, bytes 0-3 should spell 'RIFF'",
-	)
-	log.assert(
-		strings.clone_from_bytes(riff.file_format_id[:]) == "WAVE",
-		"Invalid .wav file, bytes 8-11 should spell 'WAVE'",
-	)
-	log.assert(
-		offset < len(file_data),
-		fmt.aprint("offset %d >= len(file_data) %d", offset, len(file_data)),
-	)
+  log.assert(
+    strings.clone_from_bytes(riff.file_type_bloc_id[:]) == "RIFF", // RIFF header
+    "Invalid .wav file, bytes 0-3 should spell 'RIFF'",
+  )
+  log.assert(
+    strings.clone_from_bytes(riff.file_format_id[:]) == "WAVE",
+    "Invalid .wav file, bytes 8-11 should spell 'WAVE'",
+  )
+  log.assert(
+    offset < len(file_data),
+    fmt.aprint("offset %d >= len(file_data) %d", offset, len(file_data)),
+  )
 
-	for offset < len(file_data) {
-		// TODO: get this to read the file properly
-		chunk: ChunkHeader
-		intrinsics.mem_copy(&chunk, &file_data[offset], size_of(ChunkHeader))
+  for offset < len(file_data) {
+    // TODO: get this to read the file properly
+    chunk: ChunkHeader
+    intrinsics.mem_copy(&chunk, &file_data[offset], size_of(ChunkHeader))
 
-		log.debugf(
-			"%c%c%c%c header",
-			cast(rune)chunk.chunk_id[0],
-			cast(rune)chunk.chunk_id[1],
-			cast(rune)chunk.chunk_id[2],
-			cast(rune)chunk.chunk_id[3],
-		)
-		log.debugf("- chunk size: %d", chunk.chunk_size)
+    log.debugf(
+      "%c%c%c%c header",
+      cast(rune)chunk.chunk_id[0],
+      cast(rune)chunk.chunk_id[1],
+      cast(rune)chunk.chunk_id[2],
+      cast(rune)chunk.chunk_id[3],
+    )
+    log.debugf("- chunk size: %d", chunk.chunk_size)
 
-		switch chunk.chunk_id {
-		case "fmt ":
-			// Format section
-			intrinsics.mem_copy(&format, &file_data[offset], size_of(PcmFormatHeader))
+    switch chunk.chunk_id {
+    case "fmt ":
+      // Format section
+      intrinsics.mem_copy(&format, &file_data[offset], size_of(PcmFormatHeader))
 
-			log.debugf("- audio_format: %d", format.audio_format)
-			log.debugf("- channels: %d", format.channels)
-			log.debugf("- frequency: %d", format.frequency)
-			log.debugf("- byte per sec: %d", format.byte_per_sec)
-			log.debugf("- byte per bloc: %d", format.byte_per_bloc)
-			log.debugf("- bits per sample: %d", format.bits_per_sample)
+      log.debugf("- audio_format: %d", format.audio_format)
+      log.debugf("- channels: %d", format.channels)
+      log.debugf("- frequency: %d", format.frequency)
+      log.debugf("- byte per sec: %d", format.byte_per_sec)
+      log.debugf("- byte per bloc: %d", format.byte_per_bloc)
+      log.debugf("- bits per sample: %d", format.bits_per_sample)
 
-			switch format.audio_format {
-			case WAVE_FORMAT_IEEE_FLOAT:
-				log.debug("IEEE FLOAT format detected")
-				intrinsics.mem_copy(&ieee_format, &file_data[offset], size_of(IeeeFormatHeader))
+      switch format.audio_format {
+      case WAVE_FORMAT_IEEE_FLOAT:
+        log.debug("IEEE FLOAT format detected")
+        intrinsics.mem_copy(&ieee_format, &file_data[offset], size_of(IeeeFormatHeader))
 
-				log.assert(
-					ieee_format.audio_format == WAVE_FORMAT_IEEE_FLOAT,
-					"ieee format audio format != 3",
-				)
+        log.assert(
+          ieee_format.audio_format == WAVE_FORMAT_IEEE_FLOAT,
+          "ieee format audio format != 3",
+        )
 
-				/*
+        /*
 				log.assertf(
 					ieee_format.chunk_size == 18,
 					"ieee format size %d != 18",
@@ -239,30 +280,29 @@ read_from_file :: proc(file_path: string, contents: ^Contents, allocator: runtim
 				)
 				*/
 
-				contents.frequency = ieee_format.frequency
-				contents.channels = ieee_format.channels
+        wave.frequency = ieee_format.frequency
+        wave.channels = ieee_format.channels
 
-				log.debugf("- ext size: %d", ieee_format.ext_size)
+        log.debugf("- ext size: %d", ieee_format.ext_size)
 
-			case WAVE_FORMAT_PCM:
-				log.debug("PCM format detected")
-				log.assert(format.audio_format == WAVE_FORMAT_PCM, "pcm format audio format != 1")
+      case WAVE_FORMAT_PCM:
+        log.debug("PCM format detected")
+        log.assert(format.audio_format == WAVE_FORMAT_PCM, "pcm format audio format != 1")
 
-				contents.frequency = format.frequency
-				contents.channels = format.channels
-			case:
-				log.panicf("uknown format: %d", format.audio_format)
-			}
+        wave.frequency = format.frequency
+        wave.channels = format.channels
+      case: log.panicf("uknown format: %d", format.audio_format)
+      }
 
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
 
 
-		/*log.assert(
+    /*log.assert(
 				format.frequency == AUDIO_FREQ,
 				fmt.aprintf("sample_rate, got %d - expected %d", format.sample_rate, AUDIO_FREQ),
 			)*/
-		/*log.assert(
+    /*log.assert(
 				format.channel_count == AUDIO_CHANNELS,
 				fmt.aprintf(
 					"channel_count, got %d - expected %d",
@@ -270,157 +310,193 @@ read_from_file :: proc(file_path: string, contents: ^Contents, allocator: runtim
 					AUDIO_CHANNELS,
 				),
 			)*/
-		/*log.assert(
+    /*log.assert(
 				format.bits_per_sample == i16(32),
 				fmt.aprintf("bits per sample, got %d - expected %d", format.bits_per_sample, 32),
 			)*/
 
-		case "fact":
-			intrinsics.mem_copy(&fact, &file_data[offset], size_of(FactHeader))
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
+    case "fact":
+      intrinsics.mem_copy(&fact, &file_data[offset], size_of(FactHeader))
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
 
-		// TODO: should I do anything with this?
-		// TODO: any calculations / extra fields on 'contents' ?
+    // TODO: should I do anything with this?
+    // TODO: any calculations / extra fields on 'wave' ?
 
-		case "data":
-			intrinsics.mem_copy(&data, &file_data[offset], size_of(WaveDataHeader))
-			offset += size_of(ChunkHeader)
+    case "data":
+      intrinsics.mem_copy(&data, &file_data[offset], size_of(WaveDataHeader))
+      offset += size_of(ChunkHeader)
 
-			// Data section
-			log.assertf(data.chunk_size != 0, "data size: %d", data.chunk_size)
-			log.assertf(
-				int(chunk.chunk_size) + offset <= len(file_data),
-				"data size (%d) + offset (%d) goes beyond length of file (%d)",
-				int(chunk.chunk_size),
-				offset,
-				len(file_data),
-			)
+      // Data section
+      log.assertf(data.chunk_size != 0, "data size: %d", data.chunk_size)
+      log.assertf(
+        int(chunk.chunk_size) + offset <= len(file_data),
+        "data size (%d) + offset (%d) goes beyond length of file (%d)",
+        int(chunk.chunk_size),
+        offset,
+        len(file_data),
+      )
 
-			samples := data.chunk_size / i32((format.bits_per_sample / 8))
-			log.debugf("- total samples: %d", samples)
+      samples := data.chunk_size / i32((format.bits_per_sample / 8))
+      log.debugf("- total samples: %d", samples)
 
-			contents.samples_raw = make([]f32, samples)
-			intrinsics.mem_copy(&contents.samples_raw[0], &file_data[offset], data.chunk_size)
-			offset += int(chunk.chunk_size)
-			if offset % 2 == 1 {
-				offset += 1 // NOTE: account for pad-byte
-			}
+      wave.num_samples = samples
+      wave.samples_raw = make([]f32, samples)
 
-			contents.samples = &contents.samples_raw[0]
+      // Decode the data chunk into normalized f32 samples in [-1, 1].
+      // Layout in samples_raw is interleaved per-channel exactly as the file stores it.
+      switch {
+      case format.audio_format == WAVE_FORMAT_IEEE_FLOAT && format.bits_per_sample == 32:
+        intrinsics.mem_copy(&wave.samples_raw[0], &file_data[offset], data.chunk_size)
 
-		case "cue ":
-			// TODO: cue chunk and handling sample offsets
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
-		case "bext":
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
-		case "junk":
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
-		case "JUNK":
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
-		case:
-			offset += size_of(ChunkHeader)
-			offset += int(chunk.chunk_size)
-		}
-	}
+      case format.audio_format == WAVE_FORMAT_PCM && format.bits_per_sample == 16:
+        src := transmute([^]i16)&file_data[offset]
+        for i in 0 ..< samples {
+          wave.samples_raw[i] = f32(src[i]) / 32768.0
+        }
 
-	contents.format = format
-	contents.time = time_make(seconds(contents^))
-	log.debug("contents")
-	log.debugf("- audio duration: %s", time_string(contents.time))
+      case format.audio_format == WAVE_FORMAT_PCM && format.bits_per_sample == 24:
+        base := offset
+        for i in 0 ..< samples {
+          // little-endian signed 24-bit
+          v :=
+            i32(file_data[base + 0]) |
+            (i32(file_data[base + 1]) << 8) |
+            (i32(file_data[base + 2]) << 16)
+          if (v & 0x800000) != 0 do v |= ~i32(0xFFFFFF) // sign-extend
+          wave.samples_raw[i] = f32(v) / 8388608.0 // 2^23
+          base += 3
+        }
 
-	log.assert(contents.frequency != 0, "contents.freqency is 0")
-	log.assert(contents.channels != 0, "contents.channels is 0")
-	log.assert(len(contents.samples_raw) != 0, "contents.samples_raw length is 0")
+      case format.audio_format == WAVE_FORMAT_PCM && format.bits_per_sample == 32:
+        src := transmute([^]i32)&file_data[offset]
+        for i in 0 ..< samples {
+          wave.samples_raw[i] = f32(src[i]) / 2147483648.0 // 2^31
+        }
+
+      case:
+        log.panicf(
+            "unsupported wav: audio_format=%d bits_per_sample=%d",
+            format.audio_format,
+            format.bits_per_sample,
+          )
+      }
+
+      offset += int(chunk.chunk_size)
+      if offset % 2 == 1 {
+        offset += 1 // NOTE: account for pad-byte
+      }
+
+      wave.samples = &wave.samples_raw[0]
+
+    case "cue ":
+      // TODO: cue chunk and handling sample offsets
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
+    case "bext":
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
+    case "junk":
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
+    case "JUNK":
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
+    case:
+      offset += size_of(ChunkHeader)
+      offset += int(chunk.chunk_size)
+    }
+  }
+
+  wave.format = format
+  wave.time = time_make(seconds(wave^))
+  log.debug("wave")
+  log.debugf("- audio duration: %s", time_string(wave.time))
+
+  log.assert(wave.frequency != 0, "wave.freqency is 0")
+  log.assert(wave.channels != 0, "wave.channels is 0")
+  log.assert(len(wave.samples_raw) != 0, "wave.samples_raw length is 0")
 }
 
 Time :: struct {
-	duration_seconds: f32,
-	ms:               f32,
-	seconds:          f32,
-	minutes:          int,
-	hours:            int,
+  duration_seconds: f32,
+  ms:               f32,
+  seconds:          f32,
+  minutes:          int,
+  hours:            int,
 }
 
 
 time_make :: proc(duration: f32) -> Time {
-	milliseconds := duration - math.floor(duration)
-	seconds := f32(int(duration) % 60) + milliseconds
-	minutes := (int(duration) / 60) % 60
-	hours := int(duration) / 3600
+  milliseconds := duration - math.floor(duration)
+  seconds := f32(int(duration) % 60) + milliseconds
+  minutes := (int(duration) / 60) % 60
+  hours := int(duration) / 3600
 
-	return Time {
-		duration_seconds = duration,
-		ms = milliseconds,
-		seconds = seconds,
-		minutes = minutes,
-		hours = hours,
-	}
+  return Time {
+    duration_seconds = duration,
+    ms = milliseconds,
+    seconds = seconds,
+    minutes = minutes,
+    hours = hours,
+  }
 }
 
 // format: 10:35:14.34
 time_string :: proc(t: Time) -> string {
-	return fmt.aprintf("%02d:%02d:%05.2f", t.hours, t.minutes, t.seconds)
+  return fmt.aprintf("%02d:%02d:%05.2f", t.hours, t.minutes, t.seconds)
 }
 
-music_bounce := Contents {
-	file_path = "assets/audio/bounce.wav",
+music_bounce := Wav {
+  file_path = "assets/audio/bounce.wav",
 }
 
 // TODO: cache recently played up to certain amount to save on load time for switching back and forth?
 
 
 which_format :: proc(f: i16) -> string {
-	switch f {
-	case WAVE_FORMAT_PCM:
-		return "PCM"
-	case WAVE_FORMAT_IEEE_FLOAT:
-		return "IEEE Float"
-	case WAVE_FORMAT_ALAW:
-		return "ALAW"
-	case WAVE_FORMAT_MULAW:
-		return "MULAW"
-	case:
-		return "UNKNOWN"
-	}
+  switch f {
+  case WAVE_FORMAT_PCM: return "PCM"
+  case WAVE_FORMAT_IEEE_FLOAT: return "IEEE Float"
+  case WAVE_FORMAT_ALAW: return "ALAW"
+  case WAVE_FORMAT_MULAW: return "MULAW"
+  case: return "UNKNOWN"
+  }
 }
 
 // TODO: change Globals structure to enable dynamic adding / removing of filters / transforms on wav contents
 // TODO: make this transform the "dynamic" buffer of samples -> when time to save off the values, transfer to the "static" buffer and write to disk?
-low_pass_filter :: proc(wav: ^Contents) {
+low_pass_filter :: proc(wav: ^Wav) {
 
-	num_samples := count_samples(wav.format)
-	lpf_samples := make([]f32, num_samples)
-	intrinsics.mem_copy(&lpf_samples[0], &wav.samples_raw[0], wav.format.chunk_size)
+  num_samples := count_samples(wav.format)
+  lpf_samples := make([]f32, num_samples)
+  intrinsics.mem_copy(&lpf_samples[0], &wav.samples_raw[0], wav.format.chunk_size)
 
-	// LPF: Y(n) = (1-ß)*Y(n-1) + (ß*X(n))) = Y(n-1) - (ß*(Y(n-1)-X(n)));
+  // LPF: Y(n) = (1-ß)*Y(n-1) + (ß*X(n))) = Y(n-1) - (ß*(Y(n-1)-X(n)));
 
-	raw: f32
-	smooth: f32
-	beta: f32 = 0.025 // 0<ß<1
+  raw: f32
+  smooth: f32
+  beta: f32 = 0.025 // 0<ß<1
 
-	channels := i32(wav.channels)
+  channels := i32(wav.channels)
 
-	// LPF: Y(n) = (1-ß)*Y(n-1) + (ß*X(n))) = Y(n-1) - (ß*(Y(n-1)-X(n)));
-	for i in channels ..< num_samples {
-		lpf_samples[i] =
-			lpf_samples[i - channels] - (beta * (lpf_samples[i - channels] - lpf_samples[i]))
-	}
+  // LPF: Y(n) = (1-ß)*Y(n-1) + (ß*X(n))) = Y(n-1) - (ß*(Y(n-1)-X(n)));
+  for i in channels ..< num_samples {
+    lpf_samples[i] =
+      lpf_samples[i - channels] - (beta * (lpf_samples[i - channels] - lpf_samples[i]))
+  }
 
-	delete(wav.samples_raw)
-	wav.samples = nil
-	intrinsics.mem_copy(&wav.samples_raw[0], &lpf_samples[0], wav.format.chunk_size)
-	wav.samples = &lpf_samples[0]
+  delete(wav.samples_raw)
+  wav.samples = nil
+  intrinsics.mem_copy(&wav.samples_raw[0], &lpf_samples[0], wav.format.chunk_size)
+  wav.samples = &lpf_samples[0]
 }
 
 count_samples :: proc(format: PcmFormatHeader) -> i32 {
-	return format.chunk_size / i32((format.bits_per_sample / 8))
+  return format.chunk_size / i32((format.bits_per_sample / 8))
 }
 
-seconds :: proc(wav: Contents) -> f32 {
-	return f32(len(wav.samples_raw)) / f32((wav.frequency * i32(wav.channels)))
+seconds :: proc(wav: Wav) -> f32 {
+  return f32(len(wav.samples_raw)) / f32((wav.frequency * i32(wav.channels)))
 }
+

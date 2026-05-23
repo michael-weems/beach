@@ -1,5 +1,16 @@
 # TODO
 
+## NEW IDEA
+
+vim motions for delete / yank / paste, etc...
+
+- highlight section, yank it, move to another file, paste it into a section of that file
+- same for using marks / global marks
+- same for d/c/x operations etc...
+- really let people with vim mastery use this as a super power tool
+
+## Tasks
+
 - [ ] setup odin lsp config to disable odin format on hard-coded slices / arrays and log statements
 - [ ] tweak the 'j' action y-movement to be less stuttery
 - [ ] convert triangle shader to rectangle shader with rounded edges
