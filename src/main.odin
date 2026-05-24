@@ -986,6 +986,8 @@ render_text_to_card :: proc(wave: Wave, fonts: ^FontState, text_color: sg.Color)
   }
 
   clear_color := convert_to_sokol_rgb(ColorTheme[.SURFACE])
+  if w.is_playing do clear_color = convert_to_sokol_rgb(ColorTheme[.HIGHLIGHT_HIGH])
+  else if g.pager.paging_index == wave.index do clear_color = convert_to_sokol_rgb(ColorTheme[.HIGHLIGHT_MED])
 
   // Offscreen pass: write into this card's render target
   sg.begin_pass(
@@ -1363,6 +1365,7 @@ process_user_input :: proc(frame: Frame) {
       // NOTE: switching song, unload all other wav files
       // TODO: sa.shutdown on all?
 
+      wav.pause(playing)
       prev, play_index := pager.select(&g.pager)
       play_audio({index = play_index})
     }
