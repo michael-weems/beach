@@ -43,6 +43,10 @@ Vertex :: struct {
   color: sg.Color,
 }
 
+NIL_HANDLE :: 0
+CAMERA_HANDLE :: 1
+WAVE_HANDLE_START :: 2
+
 Entity_Kind :: enum {
   FILE_ENTRY,
   CAMERA,
@@ -69,37 +73,43 @@ TextDesc :: struct {
 MAX_ANIMATIONS_PER_ENTITY :: 10
 MAX_SECTIONS_PER_ANIMATION :: 10
 
-Entity_Hot :: struct {
+Entity_Handle :: distinct int
+Wave_Handle :: distinct int
+Entity :: struct {
   position:      Vec3,
   temp_position: Vec3,
-}
-
-Entity_Cold :: struct {
-  kind:         Entity_Kind,
-  target:       Vec3,
-  rotation:     f32,
-  model_matrix: Mat4,
-  animes:       [MAX_ANIMATIONS_PER_ENTITY]Animation,
+  kind:          Entity_Kind,
+  target:        Vec3,
+  rotation:      f32,
+  model_matrix:  Mat4,
+  animes:        [MAX_ANIMATIONS_PER_ENTITY]Animation,
 }
 
 Wave :: struct {
-  index: int,
+  entity:     Entity_Handle,
+  using text: TextDesc,
+  using wav:  ^wav.Wav,
 }
 
-Entity :: struct {
-  using hot:  Entity_Hot,
-  using cold: Entity_Cold,
+position :: proc(handle: Entity_Handle) -> Vec3 {
+  return g.entities[handle].position
 }
 
-Wave_Entity :: struct {
-  using entity: Entity,
-  using text:   TextDesc,
-  wave:         Wave,
+get_wav :: proc(handle: Wave_Handle) -> ^wav.Wav {
+  return g.waves[int(handle)].wav
 }
 
-Camera_Entity :: struct {
-  using entity: Entity,
-  debug_mode:   bool,
+camera_read_only :: proc() -> Entity {
+  return g.entities[CAMERA_HANDLE]
+}
+
+get_read_only :: proc(handle: Entity_Handle) -> Entity {
+  return g.entities[handle]
+}
+
+Camera :: struct {
+  entity:     Entity_Handle,
+  debug_mode: bool,
 }
 
 // shared state
@@ -144,12 +154,16 @@ MAX_WAV_FILE_MEMORY :: 4 * mem.Gigabyte
 
 Alloc :: struct {
   // wave files
-  wave_arena:       virtual.Arena,
-  wave_allocator:   mem.Allocator,
+  wave_arena:            virtual.Arena,
+  wave_allocator:        mem.Allocator,
+
+  // wave entities
+  wave_entity_arena:     virtual.Arena,
+  wave_entity_allocator: mem.Allocator,
 
   // entities
-  entity_arena:     virtual.Arena,
-  entity_allocator: mem.Allocator,
+  entity_arena:          virtual.Arena,
+  entity_allocator:      mem.Allocator,
 }
 alloc: ^Alloc
 
@@ -158,16 +172,17 @@ Globals :: struct {
   pager:              pager.pager,
   fonts_state:        FontState,
   quads_state:        QuadState,
-  camera:             Camera_Entity,
+  num_entities:       int,
+  entities:           #soa[]Entity,
+  camera:             Camera,
   num_waves:          int,
-  waves:              []^wav.Wav,
-  files:              #soa[]Wave_Entity,
+  waves:              []Wave,
   num_vertices:       int,
   vertices:           []Vertex,
   num_indices:        int,
   indices:            []u16,
   playing_state:      Audio_State,
-  playing:            Wave,
+  playing:            Wave_Handle,
   index:              int,
   bindings:           sg.Bindings,
   pass_action:        sg.Pass_Action,
@@ -183,10 +198,6 @@ DEPTH_UI_OVERLAY :: f32(6.0) // NOTE: how far from the camera the overlay UI ele
 
 convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
   return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
-}
-
-get_wave :: #force_inline proc(wave: Wave) -> ^wav.Wav {
-  return g.waves[wave.index]
 }
 
 ColorKey :: enum {
@@ -235,9 +246,9 @@ ColorTheme :: [ColorKey]sg.Color {
     highlight-high: #524f67F2;/* borders / visual dividers, cursor background paired with text foreground */
 */
 
-play_audio :: proc(play: Wave) {
-  g.playing = play
-  w := get_wave(play)
+play_audio :: proc(handle: Wave_Handle) {
+  g.playing = handle
+  w := get_wav(handle)
 
   if !w.is_valid {
     log.infof("CANNOT PLAY INVALID WAV FILE: %s", w.file_path)
@@ -253,7 +264,7 @@ play_audio :: proc(play: Wave) {
   log.debugf(
     "%s %03d/%03d recordings  %dhz  %s  %10d samples  %d channels  %02dbit sample size  %s format  %s",
     assertprefix.PLAY,
-    play.index,
+    handle,
     g.num_waves,
     w.frequency,
     wav.time_string(w.time),
@@ -265,49 +276,7 @@ play_audio :: proc(play: Wave) {
   )
 }
 
-make_file_entry :: proc(wav_index: int) -> Wave_Entity {
-  log.assertf(
-    len(g.waves) > wav_index,
-    "wav_index %d is out of bounds: max %d",
-    wav_index,
-    len(g.waves),
-  )
-
-  model_matrix :=
-    linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 1, 0}) *
-    linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 0, 1}) *
-    linalg.matrix4_scale_f32(Vec3{2, 2, 1})
-
-  // TODO: consolidate
-  entry := Wave_Entity {
-    kind = .FILE_ENTRY,
-    position = Vec3{0, 0, DEPTH_UI},
-    wave = {index = wav_index},
-    model_matrix = model_matrix,
-  }
-
-  return entry
-}
-
-EntityIndex :: struct {
-  start: int,
-  len:   int,
-}
-
-create_wave_entities :: proc(allocator: runtime.Allocator) {
-  context.allocator = allocator
-
-  g.files = make(#soa[]Wave_Entity, size_of(Wave_Entity) * (g.num_waves + 1)) // TODO: verify this allocates the right amount of memory
-  // TODO: necessary to memset to 0?
-
-  for index in 1 ..= g.num_waves {
-    g.files[index] = make_file_entry(index)
-  }
-}
-
 load_dir :: proc(dir: string, allocator: runtime.Allocator) {
-  context.allocator = allocator
-
   fd, err := os.open(dir)
   log.assertf(err == nil, "open dir: %s: %v", dir, err)
 
@@ -330,7 +299,14 @@ load_dir :: proc(dir: string, allocator: runtime.Allocator) {
     g.num_waves += 1
   }
 
-  g.waves = make([]^wav.Wav, g.num_waves + 1) // TODO: verify this allocates the right amount of memory
+  wave_entity_arena_err := virtual.arena_init_growing(
+    &alloc.wave_entity_arena,
+    uint(size_of(Wave) * g.num_waves + 1),
+  )
+  log.assertf(wave_entity_arena_err == .None, "could not create entity arena")
+  alloc.wave_entity_allocator = virtual.arena_allocator(&alloc.wave_entity_arena)
+
+  g.waves = make([]Wave, g.num_waves + 1, alloc.wave_entity_allocator)
 
   pool: thread.Pool
   num_cpu_cores := 10 // TODO: system max threads?
@@ -349,19 +325,18 @@ load_dir :: proc(dir: string, allocator: runtime.Allocator) {
 
     file_size := e.size
 
-    g.waves[index] = new(wav.Wav)
-
-    wave := g.waves[index]
+    wave := &g.waves[index]
+    wave.wav = new(wav.Wav, allocator) // explicitly using heap here
     wave.file_path = e.fullpath
     wave.file_name = filepath.stem(e.fullpath)
-    thread.pool_add_task(&pool, alloc.wave_allocator, load_wave_worker, wave, index)
+    thread.pool_add_task(&pool, alloc.wave_allocator, load_wave_worker, wave.wav, index)
   }
 
   thread.pool_finish(&pool)
 
   for index in 1 ..= g.num_waves {
-    wave := get_wave({index})
-    errs := wav.validate(wave)
+    wave := g.waves[index]
+    errs := wav.validate(wave.wav)
     if !wave.is_valid {
       log.infof("invalid wav file: %s", wave.file_path)
     }
@@ -439,7 +414,7 @@ init_font_state :: proc(fonts: ^FontState) {
   )
 }
 
-init_file_card :: proc(e: Wave) {
+init_file_card :: proc(handle: Wave_Handle) {
   color_img := sg.make_image(
     {
       usage = {color_attachment = true},
@@ -449,8 +424,8 @@ init_file_card :: proc(e: Wave) {
       sample_count = 1,
     },
   )
-  e := &g.files[e.index] // TODO: will this work, since it's #soa
-  e.text = {
+  wave := &g.waves[handle] // TODO: will this work, since it's #soa
+  wave.text = {
     color_image  = color_img,
     // Separate views for the same image:
     attach_view  = sg.make_view({color_attachment = {image = color_img}}),
@@ -485,13 +460,14 @@ init_quad_state :: proc(quads: ^QuadState) {
   )
 }
 
-init_entity_allocator :: proc(alloc: ^Alloc, num_entities: int) {
+init_entity_allocators :: proc(alloc: ^Alloc, initial_capacity: int) {
   entity_arena_err := virtual.arena_init_growing(
     &alloc.entity_arena,
-    uint(size_of(Entity) * num_entities),
+    uint(size_of(Entity) * initial_capacity),
   )
   log.assertf(entity_arena_err == .None, "could not create entity arena")
   alloc.entity_allocator = virtual.arena_allocator(&alloc.entity_arena)
+
 }
 
 init :: proc "c" () {
@@ -510,7 +486,6 @@ init :: proc "c" () {
   mem.arena_init(&g.frame.arena, g.frame.buffer[:])
   g.frame.allocator = mem.arena_allocator(&g.frame.arena)
 
-
   sa.setup(
     {
       sample_rate = wav.AUDIO_FREQ,
@@ -523,9 +498,42 @@ init :: proc "c" () {
   load_dir(process_input.audio_dir, alloc.wave_allocator)
   log.assertf(g.num_waves > 0, "no wav files found in dir: %s", process_input.audio_dir)
 
-  init_entity_allocator(alloc, g.num_waves)
+  // 3* the space for entities for saved off snippets + 1 for camera + 1 for 0-stub
+  initial_entity_capacity := (3 * g.num_waves) + 1 + 1
+  init_entity_allocators(alloc, initial_entity_capacity)
 
-  create_wave_entities(alloc.entity_allocator)
+  // Initialize entities memory
+  g.entities = make(
+    #soa[]Entity,
+    size_of(Entity) * initial_entity_capacity,
+    alloc.entity_allocator,
+  )
+  g.entities[CAMERA_HANDLE] = Entity {
+    kind     = .CAMERA,
+    position = {0, 0, 0},
+    target   = {0, 0, -DEPTH_UI},
+    rotation = linalg.to_radians(f32(180.0)),
+  }
+  g.camera = Camera {
+    entity     = CAMERA_HANDLE,
+    debug_mode = true,
+  }
+
+  for index in 1 ..= g.num_waves {
+    model_matrix :=
+      linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 1, 0}) *
+      linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 0, 1}) *
+      linalg.matrix4_scale_f32(Vec3{2, 2, 1})
+
+    handle := WAVE_HANDLE_START + index - 1
+
+    g.waves[index].entity = Entity_Handle(handle)
+    g.entities[handle] = Entity {
+      kind         = .FILE_ENTRY,
+      position     = Vec3{0, 0, DEPTH_UI},
+      model_matrix = model_matrix,
+    }
+  }
 
   g.pager.total_entries = g.num_waves
 
@@ -544,14 +552,6 @@ init :: proc "c" () {
   }
   g.num_indices = len(g.indices)
   // odinfmt: enable
-
-  cam := &g.camera
-
-  v := linalg.matrix4_look_at_f32(cam.position, cam.target, {0, 1, 1})
-  cam.kind = .CAMERA
-  set_position(cam, Vec3{0, 0, 0})
-  set_target(cam, Vec3{0, 0, -DEPTH_UI})
-  cam.rotation = linalg.to_radians(f32(180.0))
 
   sg.setup(
     {
@@ -597,37 +597,34 @@ init :: proc "c" () {
   }
 
   for w in 1 ..= g.num_waves {
-    g.files[w].entity.position = Vec3{0, -1, 1}
-    g.files[w].entity.model_matrix =
+    wave := &g.waves[w]
+    e := &g.entities[wave.entity]
+    e.position = Vec3{0, -1, 1}
+    e.model_matrix =
       linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 1, 0}) *
       linalg.matrix4_rotate_f32(linalg.to_radians(f32(180)), {0, 0, 1}) *
       linalg.matrix4_scale_f32(Vec3{2, 2, 1})
 
-    id := Wave {
-      index = w,
-    }
+    id := Wave_Handle(w)
     init_file_card(id)
 
     CARD_SPACING :: f32(2) // world-space vertical gap between cards
-    g.files[w].entity.position.y = f32(w) * CARD_SPACING
+    e.position.y = f32(w) * CARD_SPACING
 
     // NOTE: this *should* set the background color for the part the text will show up on
     // TODO: change this to .SURFACE or .OVERLAY
     log.assertf(len(g.vertices) > 0, "must load wav files and intialize vertices before init_gui")
-    g.files[w].text.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
-
     log.assertf(len(g.indices) > 0, "must load wav files and intialize vertices before init_gui")
-    g.files[w].text.bindings.index_buffer = sg.make_buffer(
-      {usage = {index_buffer = true}, data = sg_range(g.indices[:])},
-    )
-
     log.assertf(len(g.waves) > 1, "len g.waves <= 1")
 
-    g.files[w].text.bindings.views = {
-      shaders.VIEW_text_tex = g.files[w].text.texture_view,
+    g.waves[w].text.bindings.vertex_buffers[0] = sg.make_buffer({data = sg_range(g.vertices[:])})
+    g.waves[w].text.bindings.index_buffer = sg.make_buffer(
+      {usage = {index_buffer = true}, data = sg_range(g.indices[:])},
+    )
+    g.waves[w].text.bindings.views = {
+      shaders.VIEW_text_tex = g.waves[w].text.texture_view,
     }
-
-    g.files[w].text.bindings.samplers = {
+    g.waves[w].text.bindings.samplers = {
       shaders.SMP_text_smp = g.sampler,
     }
   }
@@ -635,11 +632,13 @@ init :: proc "c" () {
   pager.first(&g.pager)
   pager.select(&g.pager)
 
-  play_audio({index = g.pager.active_index})
+  handle := Wave_Handle(g.pager.active_index)
+  play_audio(handle)
 }
 
 frame :: proc "c" () {
   context = default_context
+  context.allocator = g.frame.allocator
 
   g.frame.dt = f32(sapp.frame_duration())
   g.frame.screen_width = sapp.widthf()
@@ -648,6 +647,8 @@ frame :: proc "c" () {
   process_user_input(g.frame)
   update_gui(g.frame)
   update_audio(g.frame)
+
+  mem.free_all(g.frame.allocator)
 }
 
 sg_range :: proc {
@@ -700,46 +701,25 @@ pow_f32 :: proc(x: f32, power: int) -> f32 {
   return result
 }
 
-move_by_delta :: proc {
-  move_by_delta_soa,
-  move_by_delta_aos,
-}
-
-move_by_delta_soa :: proc(entities: #soa[]Entity, wave: Wave, v: Vec3) {
-  new_position := entities[wave.index].hot.position + v
-  set_position(entities, wave, new_position)
-  set_target(entities, wave, new_position)
-}
-move_by_delta_aos :: proc(e: ^Entity, v: Vec3) {
+move_by_delta :: proc(handle: Entity_Handle, v: Vec3) {
+  e := g.entities[handle]
   new_position := e.position + v
-  set_position(e, new_position)
-  set_target(e, new_position)
+  set_position(handle, new_position)
+  set_target(handle, new_position)
 }
 
-set_position :: proc {
-  set_position_soa,
-  set_position_aos,
-}
-set_position_aos :: proc(e: ^Entity, v: Vec3) {
+set_position :: proc(handle: Entity_Handle, v: Vec3) {
+  e := &g.entities[handle]
   e.position = v
   e.temp_position = v
 }
-set_position_soa :: proc(entities: #soa[]Entity, wave: Wave, v: Vec3) {
-  entities[wave.index].hot.position = v
-  entities[wave.index].hot.temp_position = v
+
+set_target :: proc(handle: Entity_Handle, v: Vec3) {
+  e := &g.entities[handle]
+  e.target = v
+  //e.target.z += DEPTH_UI // NOTE: camera: x: -left and +right, y: +up and -down, z: +forward/zoomin and -backward/zoomout
 }
 
-set_target :: proc {
-  set_target_soa,
-  set_target_aos,
-}
-set_target_aos :: proc(e: ^Entity, v: Vec3) {
-  e.target = v
-}
-set_target_soa :: proc(entities: #soa[]Entity, wave: Wave, v: Vec3) {
-  entities[wave.index].cold.target = v
-}
-//e.target.z += DEPTH_UI // NOTE: camera: x: -left and +right, y: +up and -down, z: +forward/zoomin and -backward/zoomout
 
 fovy := linalg.to_radians(f32(90.0))
 fovy_half := fovy / 2
@@ -763,22 +743,24 @@ camera_update :: proc(dt: f32) {
   if g.camera.debug_mode {
     // NOTE: don't reset in debug mode
   } else {
-    g.camera.position.x = 0.0
-    g.camera.position.z = 0.0
-    g.camera.target.x = 0.0
-    g.camera.target.z = DEPTH_UI
+    g.entities[CAMERA_HANDLE].position.x = 0.0
+    g.entities[CAMERA_HANDLE].position.z = 0.0
+    g.entities[CAMERA_HANDLE].target.x = 0.0
+    g.entities[CAMERA_HANDLE].target.z = DEPTH_UI
   }
 
   // NOTE: compute new states for dependent values
   if spinning {
-    g.camera.rotation += linalg.to_radians(ROTATION_SPEED * dt)
+    g.entities[CAMERA_HANDLE].rotation += linalg.to_radians(ROTATION_SPEED * dt)
   }
 
   // NOTE: rotate camera around z=DEPTH_UI line
   if !g.camera.debug_mode {
     // TODO: enable this in debug mode, too, but right now it's getting in the way
-    g.camera.position.x = linalg.sin(g.camera.rotation) * DEPTH_UI
-    g.camera.position.z = (linalg.cos(g.camera.rotation) * DEPTH_UI) + DEPTH_UI
+    g.entities[CAMERA_HANDLE].position.x =
+      linalg.sin(g.entities[CAMERA_HANDLE].rotation) * DEPTH_UI
+    g.entities[CAMERA_HANDLE].position.z =
+      (linalg.cos(g.entities[CAMERA_HANDLE].rotation) * DEPTH_UI) + DEPTH_UI
   }
 
   // NOTE: translate
@@ -789,8 +771,10 @@ camera_update :: proc(dt: f32) {
 
 compute_mvp :: proc(dt: f32, position: Vec3, mm: Mat4, w: f32, h: f32) -> shaders.Quad_Vs_Params {
 
+  camera := get_read_only(CAMERA_HANDLE)
+
   p := linalg.matrix4_perspective_f32(fovy, w / h, 0.1, 2 * DEPTH_UI)
-  v := linalg.matrix4_look_at_f32(g.camera.temp_position, g.camera.target, Vec3{0.0, 1.0, 0.0}) // NOTE: y == up
+  v := linalg.matrix4_look_at_f32(camera.temp_position, camera.target, Vec3{0.0, 1.0, 0.0}) // NOTE: y == up
 
   // NOTE: transformations happen right-to-left
   // NOTE: T * R * S --> Scale, then rotate, then translate
@@ -854,11 +838,13 @@ update_gui :: proc(frame: Frame) {
 
   // translate y-positions to correct world-coordinates
   for index in 1 ..= g.num_waves {
-    g.files[index].entity.position.x = 0
-    g.files[index].entity.position.y = f32(g.pager.paging_index - index) * CARD_SPACING
-    g.files[index].entity.position.z = -DEPTH_UI
+    pos := Vec3{0, f32(g.pager.paging_index - index) * CARD_SPACING, -DEPTH_UI}
+    wave := g.waves[index]
+    set_position(wave.entity, pos) // TODO: do this? or instead should I do all operations without the indirection of the fat-pointer?
     // TODO: any rotations?
+
     // TODO: any scaling?
+
 
     // TODO: actually apply these to the vertices?
   }
@@ -866,12 +852,10 @@ update_gui :: proc(frame: Frame) {
   sdtx.set_context(sdtx.default_context())
   sdtx.canvas(w * 0.5, h * 0.5)
 
-  wave := Wave {
-    index = g.pager.active_index,
-  }
-
-  playing := get_wave(wave)
+  playing := get_wav(Wave_Handle(g.pager.active_index))
   cam := &g.camera
+
+  camera := camera_read_only()
 
   c := convert_to_sokol_rgb(ColorTheme[.DEBUG_TEXT])
   sdtx.font(5)
@@ -882,15 +866,20 @@ update_gui :: proc(frame: Frame) {
   sdtx.printf("FPS: %f\n", 1 / sapp.frame_duration())
   sdtx.printf("breadth=%f\n", BREADTH_UI)
   sdtx.printf("cam: debug=%s\n", bool_str(g.camera.debug_mode))
-  sdtx.printf("cam: position: x=%f y=%f z=%f\n", cam.position.x, cam.position.y, cam.position.z)
-  sdtx.printf("cam: target: x=%f y=%f z=%f\n", cam.target.x, cam.target.y, cam.target.z)
-  sdtx.printf("cam: rotation=%f spin=%v\n", linalg.to_degrees(g.camera.rotation), spinning)
+  sdtx.printf(
+    "cam: position: x=%f y=%f z=%f\n",
+    camera.position.x,
+    camera.position.y,
+    camera.position.z,
+  )
+  sdtx.printf("cam: target: x=%f y=%f z=%f\n", camera.target.x, camera.target.y, camera.target.z)
+  sdtx.printf("cam: rotation=%f spin=%v\n", linalg.to_degrees(camera.rotation), spinning)
 
   // TODO: translate camera_update functionality to apply to the world objects, not the camera
   //camera_update(dt)
 
   for i in 1 ..= g.num_waves {
-    render_text_to_card({index = i}, &g.fonts_state, convert_to_sokol_rgb(ColorTheme[.TEXT]))
+    render_text_to_card(Wave_Handle(i), &g.fonts_state, convert_to_sokol_rgb(ColorTheme[.TEXT]))
   }
 
   // now that we've rendered to the image on the GPU side, we can update the image
@@ -918,13 +907,15 @@ update_gui :: proc(frame: Frame) {
     verts := card_quad_verts()
     offset := sg.append_buffer(g.quads_state.vertex_buffer, {ptr = &verts, size = size_of(verts)})
 
-    mvp := compute_mvp(dt, g.files[index].entity.position, linalg.MATRIX4F32_IDENTITY, w, h)
+    wave := g.waves[index]
+    pos := position(wave.entity)
+    mvp := compute_mvp(dt, pos, linalg.MATRIX4F32_IDENTITY, w, h)
 
     bindings := sg.Bindings {
       vertex_buffers = {0 = g.quads_state.vertex_buffer},
       vertex_buffer_offsets = {0 = offset},
       index_buffer = g.quads_state.index_buffer,
-      views = {shaders.VIEW_quad_tex = g.files[index].text.texture_view}, // texture view, not attachment view
+      views = {shaders.VIEW_quad_tex = wave.text.texture_view}, // texture view, not attachment view
       samplers = {shaders.SMP_quad_smp = g.quads_state.sampler},
     }
     sg.apply_bindings(bindings)
@@ -941,7 +932,7 @@ update_gui :: proc(frame: Frame) {
   sg.commit()
 }
 
-render_text_to_card :: proc(wave: Wave, fonts: ^FontState, text_color: sg.Color) {
+render_text_to_card :: proc(handle: Wave_Handle, fonts: ^FontState, text_color: sg.Color) {
   // Build vertex buffer from fontstash quads
   verts: [dynamic]TextVertex // TODO: move this to frame allocator?
   defer delete(verts)
@@ -956,7 +947,7 @@ render_text_to_card :: proc(wave: Wave, fonts: ^FontState, text_color: sg.Color)
   fs.SetAlignHorizontal(&fonts.fons, .LEFT)
 
   quad: fs.Quad
-  w := get_wave(wave)
+  w := get_wav(handle)
   iter := fs.TextIterInit(&fonts.fons, 8, f32(CARD_H) * 0.5, w.file_name)
   for fs.TextIterNext(&fonts.fons, &iter, &quad) {
     c := [4]f32{text_color.r, text_color.g, text_color.b, text_color.a}
@@ -987,14 +978,14 @@ render_text_to_card :: proc(wave: Wave, fonts: ^FontState, text_color: sg.Color)
 
   clear_color := convert_to_sokol_rgb(ColorTheme[.SURFACE])
   if w.is_playing do clear_color = convert_to_sokol_rgb(ColorTheme[.HIGHLIGHT_HIGH])
-  else if g.pager.paging_index == wave.index do clear_color = convert_to_sokol_rgb(ColorTheme[.HIGHLIGHT_MED])
+  else if g.pager.paging_index == int(handle) do clear_color = convert_to_sokol_rgb(ColorTheme[.HIGHLIGHT_MED])
 
   // Offscreen pass: write into this card's render target
   sg.begin_pass(
     {
       action = {colors = {0 = {load_action = .CLEAR, clear_value = clear_color}}},
       attachments = {
-        colors = {0 = g.files[wave.index].text.attach_view},
+        colors = {0 = g.waves[handle].text.attach_view},
         // No depth attachment — we're doing 2D text only
       },
     },
@@ -1062,34 +1053,37 @@ animation_update :: proc(dt: f32, anime: Animation_Step, pos0: Vec3) -> Vec3 {
   return Vec3{}
 }
 
-process_animation_list :: proc(dt: f32, wave: Wave) {
+process_animation_list :: proc(dt: f32, handle: Wave_Handle) {
 
   still_processing := false
-  pos := g.files[wave.index].entity.position
+  wave := g.waves[handle]
+  entity_handle := wave.entity
 
-  // TODO: use range iteration when the animation queue memory issues are figured out
+  pos := g.entities[entity_handle].position
+
+  // TODO: any way to make this more maintainable? the endless nesting will be this code's demise
   for queue_index in 0 ..< MAX_ANIMATIONS_PER_ENTITY {
     for index in 0 ..< MAX_SECTIONS_PER_ANIMATION {
       log.assertf(
-        g.files[wave.index].entity.animes[queue_index].steps[index].kind == .Constant_Acceleration,
+        g.entities[entity_handle].animes[queue_index].steps[index].kind == .Constant_Acceleration,
         "g.files[wave.index] animation has invalid memory %v",
-        g.files[wave.index].entity.animes[queue_index].steps[index].kind,
+        g.entities[entity_handle].animes[queue_index].steps[index].kind,
       )
-      log.debugf("using %v", g.files[wave.index].entity.animes[queue_index].steps[index].kind)
+      log.debugf("using %v", g.entities[entity_handle].animes[queue_index].steps[index].kind)
 
-      if g.files[wave.index].entity.animes[queue_index].steps[index].cancelled do continue
+      if g.entities[entity_handle].animes[queue_index].steps[index].cancelled do continue
 
-      if g.files[wave.index].entity.animes[queue_index].steps[index].progress <
-         g.files[wave.index].entity.animes[queue_index].steps[index].max_progress {
+      if g.entities[entity_handle].animes[queue_index].steps[index].progress <
+         g.entities[entity_handle].animes[queue_index].steps[index].max_progress {
         percent_complete :=
-          dt / g.files[wave.index].entity.animes[queue_index].steps[index].duration
-        g.files[wave.index].entity.animes[queue_index].steps[index].progress += percent_complete
+          dt / g.entities[entity_handle].animes[queue_index].steps[index].duration
+        g.entities[entity_handle].animes[queue_index].steps[index].progress += percent_complete
         // NOTE: still report out the final calculated position even when the animation is complete
       }
 
-      pos = animation_update(dt, g.files[wave.index].entity.animes[queue_index].steps[index], pos)
+      pos = animation_update(dt, g.entities[entity_handle].animes[queue_index].steps[index], pos)
 
-      if g.files[wave.index].entity.animes[queue_index].steps[index].progress >= g.files[wave.index].entity.animes[queue_index].steps[index].max_progress do continue
+      if g.entities[entity_handle].animes[queue_index].steps[index].progress >= g.entities[entity_handle].animes[queue_index].steps[index].max_progress do continue
 
       still_processing = true
       break
@@ -1097,39 +1091,39 @@ process_animation_list :: proc(dt: f32, wave: Wave) {
   }
 
   if still_processing {
-    g.files[wave.index].entity.temp_position = pos
-    g.files[wave.index].entity.target = pos
-    g.files[wave.index].entity.target = Vec3{0.0, pos.y, DEPTH_UI}
+    g.entities[entity_handle].temp_position = pos
+    g.entities[entity_handle].target = pos
+    g.entities[entity_handle].target = Vec3{0.0, pos.y, DEPTH_UI}
     return
   }
 
   log.assert(false, "not processing for some reason")
-  g.files[wave.index].entity.position = pos // NOTE: finalize the changes
-  g.files[wave.index].entity.temp_position = g.files[wave.index].entity.position
-  g.files[wave.index].entity.target = g.files[wave.index].entity.position
-  g.files[wave.index].entity.target = Vec3{0.0, g.files[wave.index].entity.position.y, DEPTH_UI}
-  reset_animations(wave)
+  g.entities[entity_handle].position = pos // NOTE: finalize the changes
+  g.entities[entity_handle].temp_position = g.entities[entity_handle].position
+  g.entities[entity_handle].target = g.entities[entity_handle].position
+  g.entities[entity_handle].target = Vec3{0.0, g.entities[entity_handle].position.y, DEPTH_UI}
+  reset_animations(entity_handle)
   return
 }
 
-reset_animations :: proc(wave: Wave) {
+reset_animations :: proc(handle: Entity_Handle) {
   // zero-is-initialization
   for anime in 0 ..< MAX_ANIMATIONS_PER_ENTITY {
     for step in 0 ..< MAX_SECTIONS_PER_ANIMATION {
-      g.files[wave.index].entity.animes[anime].steps[step].kind = .None
-      g.files[wave.index].entity.animes[anime].steps[step].duration = 0
-      g.files[wave.index].entity.animes[anime].steps[step].max_progress = 0
-      g.files[wave.index].entity.animes[anime].steps[step].progress = 0
-      g.files[wave.index].entity.animes[anime].steps[step].target = 0
-      g.files[wave.index].entity.animes[anime].steps[step]._v0 = 0
-      g.files[wave.index].entity.animes[anime].steps[step].a = 0
-      g.files[wave.index].entity.animes[anime].steps[step].cancelled = false
+      g.entities[handle].animes[anime].steps[step].kind = .None
+      g.entities[handle].animes[anime].steps[step].duration = 0
+      g.entities[handle].animes[anime].steps[step].max_progress = 0
+      g.entities[handle].animes[anime].steps[step].progress = 0
+      g.entities[handle].animes[anime].steps[step].target = 0
+      g.entities[handle].animes[anime].steps[step]._v0 = 0
+      g.entities[handle].animes[anime].steps[step].a = 0
+      g.entities[handle].animes[anime].steps[step].cancelled = false
     }
   }
 }
 
 Animation_Lookup :: struct {
-  entity: int,
+  entity: Entity_Handle,
   anime:  int,
 }
 
@@ -1139,8 +1133,8 @@ push_animation_step :: proc(lookup: Animation_Lookup, step: Animation_Step) {
   }
 
   for s in 0 ..< MAX_SECTIONS_PER_ANIMATION {
-    if g.files[lookup.entity].entity.animes[lookup.anime].steps[s].kind == .None {
-      g.files[lookup.entity].entity.animes[lookup.anime].steps[s] = step
+    if g.entities[lookup.entity].animes[lookup.anime].steps[s].kind == .None {
+      g.entities[lookup.entity].animes[lookup.anime].steps[s] = step
       return
     }
   }
@@ -1161,7 +1155,7 @@ set_animation_step_at_index :: proc(
   if step_index > MAX_SECTIONS_PER_ANIMATION - 1 do return MAX_SECTIONS_PER_ANIMATION, false // NOTE: too many animations, ignore
 
   for s in 0 ..< MAX_SECTIONS_PER_ANIMATION {
-    if g.files[entity_index].entity.animes[animation_index].steps[s].kind == .None {
+    if g.entities[entity_index].animes[animation_index].steps[s].kind == .None {
       return s, true
     }
   }
@@ -1169,16 +1163,15 @@ set_animation_step_at_index :: proc(
 }
 
 animate_move :: proc(
-  wave: Wave,
-  e_index: int,
+  handle: Wave_Handle,
   prev_index: int = 0,
   new_index: int = 1,
   y_travel: f32 = CAMERA_TRAVEL,
 ) {
-
+  wave := g.waves[handle]
   if g.disable_animations {
     delta := Vec3{0.0, -(y_travel * f32(new_index - prev_index)), 0.0}
-    move_by_delta(&g.camera, delta)
+    move_by_delta(CAMERA_HANDLE, delta)
   } else {
     target := Vec3{0.0, -(CAMERA_TRAVEL * f32(new_index)), 0.0}
     // x = vt + ((at^2) / 2)
@@ -1187,9 +1180,9 @@ animate_move :: proc(
     // s=x0+v0t+12at2, v=v0+at
 
     // TODO: not animating camera (yet), so mostly pass an index to an entity
-    reset_animations(wave)
+    reset_animations(wave.entity)
     push_animation_step(
-      {entity = wave.index, anime = 0},
+      {entity = wave.entity, anime = 0},
       {
         // NOTE: jump in the air and end at high-point
         kind         = .Constant_Acceleration,
@@ -1200,7 +1193,7 @@ animate_move :: proc(
       },
     )
     push_animation_step(
-      {entity = wave.index, anime = 0},
+      {entity = wave.entity, anime = 0},
       {
         // NOTE: fall from high-point at higher initial-velocity
         kind     = .Constant_Acceleration,
@@ -1227,7 +1220,8 @@ animate_move :: proc(
 spinning := false
 
 spin_reset :: proc() {
-  g.camera.rotation = linalg.to_radians(f32(180.0))
+  // TODO: setup for general entity purpose
+  //g.camera.rotation = linalg.to_radians(f32(180.0))
 }
 
 GRAVITY: f32 = 9.8
@@ -1238,14 +1232,14 @@ in_air := false
 
 process_user_input :: proc(frame: Frame) {
   dt := frame.dt
-  playing := get_wave(g.playing)
+  playing := get_wav(g.playing)
 
   // NOTE: generally, the goal is to make this intuitive to use for someone familiar with VIM motions
 
   // TODO: switch statement instead ??
 
   if key_down[.PERIOD] {
-    set_position(&g.camera, Vec3{0, 0, 0})
+    set_position(CAMERA_HANDLE, Vec3{0, 0, 0})
     spinning = false
     spin_reset()
     //reset_animations(&g.camera)
@@ -1259,27 +1253,27 @@ process_user_input :: proc(frame: Frame) {
 
   if key_down[.BACKSPACE] {
     // TODO: here for debugging, can remove later
-    move_by_delta(&g.camera, Vec3{0, 0, -1})
+    move_by_delta(CAMERA_HANDLE, Vec3{0, 0, -1})
   }
   if key_down[.DELETE] {
     // TODO: here for debugging, can remove later
-    move_by_delta(&g.camera, Vec3{0, 0, 1})
+    move_by_delta(CAMERA_HANDLE, Vec3{0, 0, 1})
   }
   if key_down[.DOWN] {
     // TODO: here for debugging, can remove later
-    move_by_delta(&g.camera, Vec3{0, -.1, 0})
+    move_by_delta(CAMERA_HANDLE, Vec3{0, -.1, 0})
   }
   if key_down[.UP] {
     // TODO: here for debugging, can remove later
-    move_by_delta(&g.camera, Vec3{0, .1, 0})
+    move_by_delta(CAMERA_HANDLE, Vec3{0, .1, 0})
   }
   if key_down[.LEFT] {
     // TODO: here for debugging, can remove later
-    move_by_delta(&g.camera, Vec3{-.1, 0, 0})
+    move_by_delta(CAMERA_HANDLE, Vec3{-.1, 0, 0})
   }
   if key_down[.RIGHT] {
     // TODO: here for debugging, can remove later
-    move_by_delta(&g.camera, Vec3{.1, 0, 0})
+    move_by_delta(CAMERA_HANDLE, Vec3{.1, 0, 0})
   }
   if key_down[.Z] {
     // TODO: here for debugging, can remove later
@@ -1367,7 +1361,7 @@ process_user_input :: proc(frame: Frame) {
 
       wav.pause(playing)
       prev, play_index := pager.select(&g.pager)
-      play_audio({index = play_index})
+      play_audio(Wave_Handle(play_index))
     }
     key_down[.ENTER] = false // NOTE: manually disable it so it doesn't keep cutting
     key_down[.LEFT_ALT] = false // NOTE: manually disable it so it doesn't keep cutting
@@ -1404,7 +1398,7 @@ process_user_input :: proc(frame: Frame) {
 // TODO: this slow. we don't need it to be fast (yet). but we're getting < 60fps and this is most likely the cause. For this app, we don't need more than 30fps (probably). But I'd like to get it >60fps, >120fps if possible
 update_audio :: proc(frame: Frame) {
   dt := frame.dt
-  playing := get_wave(g.playing)
+  playing := get_wav(g.playing)
 
   if g.playing_state != .PLAYING do return
   log.assertf(
