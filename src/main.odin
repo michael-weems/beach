@@ -43,6 +43,7 @@ Vertex :: struct {
   color: sg.Color,
 }
 
+// for the entity array, positions of the various entities since I can know them up-front
 NIL_HANDLE :: 0
 CAMERA_HANDLE :: 1
 WAVE_HANDLE_START :: 2
@@ -187,6 +188,9 @@ Globals :: struct {
   bindings:           sg.Bindings,
   pass_action:        sg.Pass_Action,
   sampler:            sg.Sampler,
+  wave_pipeline:      sgl.Pipeline,
+  wave_pass_action:   sg.Pass_Action,
+  wavelength:         [][6]f32,
   disable_animations: bool,
 }
 g: ^Globals
@@ -467,7 +471,6 @@ init_entity_allocators :: proc(alloc: ^Alloc, initial_capacity: int) {
   )
   log.assertf(entity_arena_err == .None, "could not create entity arena")
   alloc.entity_allocator = virtual.arena_allocator(&alloc.entity_arena)
-
 }
 
 init :: proc "c" () {
@@ -583,7 +586,13 @@ init :: proc "c" () {
     },
   )
 
-  sgl.setup({pipeline_pool_size = 1000, logger = {func = slog.func}})
+  sgl.setup(
+    {
+      max_vertices = 1_000_000, // ~22s of 44.1 kHz before overflow
+      pipeline_pool_size = 1000,
+      logger = {func = slog.func},
+    },
+  )
 
   init_font_state(&g.fonts_state)
   init_quad_state(&g.quads_state)
@@ -632,9 +641,100 @@ init :: proc "c" () {
   pager.first(&g.pager)
   pager.select(&g.pager)
 
+  // a pipeline object with less-equal depth-testing
+  g.wave_pipeline = sgl.make_pipeline({depth = {write_enabled = true, compare = .LESS_EQUAL}})
+
+  // a default pass action
+  g.wave_pass_action = sg.Pass_Action {
+    colors = {0 = {load_action = .CLEAR, clear_value = {0.0, 0.0, 0.0, 1.0}}},
+  }
+
+
   handle := Wave_Handle(g.pager.active_index)
   play_audio(handle)
 }
+
+draw_wavelength :: proc() {
+  wave := get_wav(g.playing)
+  if wave == nil || wave.num_samples == 0 || !wave.is_valid do return
+
+  // Iterate by FRAMES, not raw interleaved samples. samples_raw is
+  // [L, R, L, R, ...] for stereo (see wav.odin:139 — total_frames =
+  // num_samples / channels). Plotting one vertex per raw sample
+  // would draw L and R offset alternately. We take the left channel
+  // per frame; swap to (L+R)*0.5 if you want a mono mixdown.
+  num_frames := int(wav.total_frames(wave))
+  channels := int(wave.channels)
+
+  // World placement. The focused card lives at y = 0 (update_gui
+  // computes y = (paging_index - index) * CARD_SPACING, so the
+  // card whose index == paging_index sits at the origin row).
+  // We anchor the waveform on that row, at the same z as the cards.
+  y_center := f32(0)
+  z := f32(-DEPTH_UI)
+
+  // Span the full visible width at z = -DEPTH_UI.
+  // BREADTH_UI is your existing approximation of the half-width
+  // visible at that depth (main.odin:728).
+  half_w := BREADTH_UI
+  x_step := (14 * half_w) / f32(num_frames)
+
+  // PCM-float samples are in ~[-1, 1]. At z = -DEPTH_UI with
+  // fovy = 90° the vertical half-extent is ~DEPTH_UI / aspect
+  // (~5.6 world units on a 16:9 window), so a scale of 0.5 gives
+  // ±0.5 of vertical swing — visible but not eating the whole row.
+  y_scale := f32(5)
+
+  // TODO: calculate all these constants per frame
+  highlight_window := 5000
+  downsample_window := 20
+
+  sgl.c3f(0, 1, 0) // green — set once, sticks for the strip
+  sgl.begin_line_strip()
+  x := -half_w
+  mode := Draw_Mode.GREEN
+  mode_changed := false
+  for f := 0; f < num_frames; f += 1 {
+    b := f + downsample_window
+    sample := f32(0)
+    for f < b && f < num_frames - 1 {
+      if wave.samples_raw[f] > sample {
+        // downsampling to get maximum of a range
+        sample = wave.samples_raw[f] // left channel
+      }
+      f += 1
+    }
+
+    is_framecursor_in_window :=
+      f64(f - highlight_window) < wave.frame_cursor &&
+      wave.frame_cursor < f64(f + highlight_window)
+
+    if is_framecursor_in_window {
+      mode = .WHITE
+      mode_changed = true
+    } else if mode == .WHITE {
+      mode = .GREEN
+      mode_changed = true
+    } else do mode_changed = false
+
+    if mode_changed {
+      switch mode {
+      case .GREEN: sgl.c3f(0, 1, 0)
+      case .WHITE: sgl.c3f(1, 1, 1)
+      }
+    }
+
+    sgl.v3f(x, y_center + sample * y_scale, z)
+    x += x_step
+  }
+  sgl.end()
+}
+
+Draw_Mode :: enum {
+  GREEN,
+  WHITE,
+}
+
 
 frame :: proc "c" () {
   context = default_context
@@ -838,10 +938,11 @@ update_gui :: proc(frame: Frame) {
 
   // translate y-positions to correct world-coordinates
   for index in 1 ..= g.num_waves {
-    pos := Vec3{0, f32(g.pager.paging_index - index) * CARD_SPACING, -DEPTH_UI}
+    pos := Vec3{-BREADTH_UI * 1.5, f32(g.pager.paging_index - index) * CARD_SPACING, -DEPTH_UI}
     wave := g.waves[index]
     set_position(wave.entity, pos) // TODO: do this? or instead should I do all operations without the indirection of the fat-pointer?
     // TODO: any rotations?
+    // TODO might be cool to slightly tilt the cards into the screen
 
     // TODO: any scaling?
 
@@ -896,6 +997,28 @@ update_gui :: proc(frame: Frame) {
     "font atlas img state is invalid",
   )
 
+  // Mirror compute_mvp's perspective exactly so the line lives in
+  // the same world the cards do (same fovy, near, far, aspect).
+  sgl.matrix_mode_projection()
+  sgl.load_identity()
+  sgl.perspective(fovy, w / h, 0.1, 2 * DEPTH_UI)
+
+  // Mirror compute_mvp's view (lookat eye→target, y-up).
+  sgl.matrix_mode_modelview()
+  sgl.load_identity()
+  // odinfmt: disable
+  sgl.lookat(
+      camera.temp_position.x, camera.temp_position.y, camera.temp_position.z,  // eye
+      camera.target.x,        camera.target.y,        camera.target.z,         // target
+      0, 1, 0,                                                         // up
+  )
+  // odinfmt: enable
+
+  draw_wavelength()
+
+  sgl.pop_pipeline()
+
+
   // NOTE: MAIN PASS
   sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
   //  sg.begin_pass({action = g.pass_action, swapchain = sglue.swapchain()})
@@ -928,6 +1051,7 @@ update_gui :: proc(frame: Frame) {
 
   // Draw debug overlay on top (sdtx uses its own internal pass resources)
   sdtx.draw()
+  sgl.draw()
   sg.end_pass()
   sg.commit()
 }

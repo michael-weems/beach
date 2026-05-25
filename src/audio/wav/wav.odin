@@ -102,21 +102,27 @@ WaveDataHeader :: struct #packed {
 // TODO: will need to adjust it based on other factors like edits and additions
 Wav :: struct {
   // config
-  channels:     i16,
-  frequency:    i32,
+  channels:       i16,
+  frequency:      i32,
   // state
-  is_valid:     bool,
-  frame_cursor: f64,
-  is_playing:   bool,
+  is_valid:       bool,
+  is_playing:     bool,
+  frame_cursor:   f64,
+  left_marker:    int,
+  right_marker:   int,
+
   // data
-  num_samples:  i32, // TODO: possible overflow?
-  samples_raw:  []f32,
-  samples:      ^f32,
+  num_samples:    i32, // TODO: possible overflow?
+  samples_raw:    []f32,
+  samples:        ^f32,
+  leading_edges:  []int,
+  trailing_edges: []int,
+
   // metadata
-  file_path:    string,
-  file_name:    string,
-  format:       PcmFormatHeader,
-  time:         Time,
+  file_path:      string,
+  file_name:      string,
+  format:         PcmFormatHeader,
+  time:           Time,
 }
 
 start_over :: proc(w: ^Wav) {
@@ -144,10 +150,24 @@ scan_backward :: proc(w: ^Wav, seconds: f64 = 2) {
   if w.frame_cursor < 0 do w.frame_cursor = 0
 }
 scan_forward :: proc(w: ^Wav, seconds: f64 = 2) {
+  w.frame_cursor += f64(w.frequency) * seconds
   frame_count := f64(total_frames(w))
   if w.frame_cursor >= frame_count {
     w.frame_cursor = frame_count - f64(w.frequency)
     if w.frame_cursor < 0 do w.frame_cursor = 0 // file shorter than 1 sec
+  }
+}
+next_spike :: proc(w: ^Wav) {
+  started_at := w.frame_cursor
+  frame_count := f64(total_frames(w))
+  spike := w.samples_raw[int(started_at)]
+  for w.frame_cursor < frame_count {
+
+
+    w.frame_cursor += 2
+  }
+  if w.frame_cursor >= frame_count {
+    w.frame_cursor = started_at
   }
 }
 
