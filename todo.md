@@ -1,5 +1,9 @@
 # TODO
 
+- generate a SUMMARY.MD that summarizes all the most important parts and findings and procedures we have so far. Do not include duplicated or unimportant information. 
+- find a way to make the changelog generation much more concise.
+
+
 ## NEW IDEA
 
 vim motions for delete / yank / paste, etc...

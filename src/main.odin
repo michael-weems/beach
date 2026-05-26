@@ -15,6 +15,7 @@ import "core:mem"
 import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:thread"
 import "core:time"
@@ -165,6 +166,9 @@ Alloc :: struct {
   // entities
   entity_arena:          virtual.Arena,
   entity_allocator:      mem.Allocator,
+
+  // edges — heap-backed so individual edge arrays can be deleted on recompute
+  edges_allocator:       mem.Allocator,
 }
 alloc: ^Alloc
 
@@ -485,9 +489,16 @@ init :: proc "c" () {
   log.assertf(wave_arena_err == .None, "could not create wave file arena")
   alloc.wave_allocator = virtual.arena_allocator(&alloc.wave_arena)
 
+  // edges allocator — heap (default allocator) so individual edge arrays can be
+  // freed on recompute (arena allocators don't support per-allocation frees).
+  alloc.edges_allocator = runtime.default_allocator()
+
   // frame allocator
   mem.arena_init(&g.frame.arena, g.frame.buffer[:])
   g.frame.allocator = mem.arena_allocator(&g.frame.arena)
+
+  // optional FPS instrumentation: BEACH_FRAME_LOG=<path> + BEACH_RUN_SECONDS=<n>
+  fps_instrument_init()
 
   sa.setup(
     {
@@ -728,6 +739,35 @@ draw_wavelength :: proc() {
     x += x_step
   }
   sgl.end()
+
+  // ─── Edge ticks ────────────────────────────────────────────────
+  // Vertical markers at every detected edge — green for leading,
+  // red for trailing. The waveform line strip advances `x` by
+  // `x_step` once per OUTER iteration, but each outer iteration
+  // consumes `downsample_window` frames internally. So the effective
+  // per-frame stride is `x_step / downsample_window`. Earlier code
+  // here used `x_step` directly, placing ticks 20× too far right.
+  // (Step 4 follow-up fix; documented in GOALS.md → Visualization.)
+  tick_x_step := x_step / f32(downsample_window)
+  tick_half_h := y_scale * 1.1
+
+  sgl.c3f(0, 1, 0) // leading edges — green
+  sgl.begin_lines()
+  for edge_frame in wave.edges.leading {
+    tx := -half_w + f32(edge_frame) * tick_x_step
+    sgl.v3f(tx, y_center - tick_half_h, z)
+    sgl.v3f(tx, y_center + tick_half_h, z)
+  }
+  sgl.end()
+
+  sgl.c3f(1, 0, 0) // trailing edges — red
+  sgl.begin_lines()
+  for edge_frame in wave.edges.trailing {
+    tx := -half_w + f32(edge_frame) * tick_x_step
+    sgl.v3f(tx, y_center - tick_half_h, z)
+    sgl.v3f(tx, y_center + tick_half_h, z)
+  }
+  sgl.end()
 }
 
 Draw_Mode :: enum {
@@ -735,6 +775,84 @@ Draw_Mode :: enum {
   WHITE,
 }
 
+
+// ─── FPS instrumentation ──────────────────────────────────────────
+// Optional, env-var-gated. Set BEACH_FRAME_LOG=<path> to append per-frame
+// CSV rows; set BEACH_RUN_SECONDS=<n> to self-terminate after <n> seconds.
+// When neither is set, both code paths are inert.
+
+@(private = "file")
+fps_log_file: ^os.File = nil
+@(private = "file")
+fps_log_frame_idx: int = 0
+@(private = "file")
+fps_run_duration_seconds: f64 = 0 // 0 means "no limit"
+@(private = "file")
+fps_start_time: time.Time
+
+fps_instrument_init :: proc() {
+  fps_start_time = time.now()
+
+  if v := os.get_env("BEACH_RUN_SECONDS", context.temp_allocator); v != "" {
+    if n, ok := strconv.parse_f64(v); ok {
+      fps_run_duration_seconds = n
+      log.infof("BEACH_RUN_SECONDS=%v — app will quit after %.3f s of frames", v, n)
+    }
+  }
+
+  if path := os.get_env("BEACH_FRAME_LOG", context.temp_allocator); path != "" {
+    // Ensure parent directory exists (best-effort; ignore err if already there).
+    if dir := filepath.dir(path, context.temp_allocator); dir != "" && dir != "." {
+      _ = os.make_directory(dir)
+    }
+    flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+    f, err := os.open(path, flags, os.Permissions_Default_File)
+    if err == nil {
+      fps_log_file = f
+      os.write_string(f, "frame,t_ms,duration_ms,fps\n")
+      log.infof("BEACH_FRAME_LOG=%s — logging per-frame timings", path)
+    } else {
+      log.warnf("could not open BEACH_FRAME_LOG path %s: %v", path, err)
+    }
+  }
+}
+
+fps_instrument_record_frame :: proc(dt: f32) {
+  if fps_log_file == nil && fps_run_duration_seconds <= 0 do return
+
+  elapsed := time.duration_seconds(time.since(fps_start_time))
+
+  if fps_log_file != nil {
+    fps := f32(0)
+    if dt > 0 do fps = 1.0 / dt
+    line := fmt.aprintf(
+      "%d,%.3f,%.3f,%.2f\n",
+      fps_log_frame_idx,
+      elapsed * 1000.0,
+      dt * 1000.0,
+      fps,
+      allocator = context.temp_allocator,
+    )
+    os.write_string(fps_log_file, line)
+    fps_log_frame_idx += 1
+  }
+
+  if fps_run_duration_seconds > 0 && elapsed >= fps_run_duration_seconds {
+    log.infof(
+      "BEACH_RUN_SECONDS reached (%.3f s, %d frames) — quitting",
+      elapsed,
+      fps_log_frame_idx,
+    )
+    sapp.quit()
+  }
+}
+
+fps_instrument_shutdown :: proc() {
+  if fps_log_file != nil {
+    os.close(fps_log_file)
+    fps_log_file = nil
+  }
+}
 
 frame :: proc "c" () {
   context = default_context
@@ -747,6 +865,8 @@ frame :: proc "c" () {
   process_user_input(g.frame)
   update_gui(g.frame)
   update_audio(g.frame)
+
+  fps_instrument_record_frame(g.frame.dt)
 
   mem.free_all(g.frame.allocator)
 }
@@ -954,6 +1074,11 @@ update_gui :: proc(frame: Frame) {
   sdtx.canvas(w * 0.5, h * 0.5)
 
   playing := get_wav(Wave_Handle(g.pager.active_index))
+
+  // Lazy edge recompute — early-returns on the dirty flag in steady state,
+  // so per-frame overhead is one bool check (GOALS.md #5).
+  wav.ensure_edges_fresh(playing, alloc.edges_allocator)
+
   cam := &g.camera
 
   camera := camera_read_only()
@@ -975,6 +1100,19 @@ update_gui :: proc(frame: Frame) {
   )
   sdtx.printf("cam: target: x=%f y=%f z=%f\n", camera.target.x, camera.target.y, camera.target.z)
   sdtx.printf("cam: rotation=%f spin=%v\n", linalg.to_degrees(camera.rotation), spinning)
+
+  // Edge-detection debug overlay (GOALS.md → Live tuning). K values
+  // are package-level vars; thresholds and counts are derived per
+  // file by compute_edges and exposed on Wav.edges.
+  sdtx.printf(
+    "edges: K_HIGH=%.2f K_LOW=%.2f  t_high=%.2f t_low=%.2f dB  L/T=%d/%d\n",
+    wav.EDGE_K_HIGH,
+    wav.EDGE_K_LOW,
+    playing.edges.t_high_db,
+    playing.edges.t_low_db,
+    len(playing.edges.leading),
+    len(playing.edges.trailing),
+  )
 
   // TODO: translate camera_update functionality to apply to the world objects, not the camera
   //camera_update(dt)
@@ -1491,22 +1629,67 @@ process_user_input :: proc(frame: Frame) {
     key_down[.LEFT_ALT] = false // NOTE: manually disable it so it doesn't keep cutting
   }
 
-  // TODO: change 'e' to go to end of next 'word' or section of higher gain
+  // Vim-style edge navigation (GOALS.md → Navigation):
+  //   w → next leading edge strictly after frame_cursor
+  //   e → next trailing edge strictly after frame_cursor
+  //   b → previous leading edge strictly before frame_cursor
+  // On no-such-edge (EOF for w/e, start-of-file for b), the cursor stays
+  // put — no wrap-around. Each nav proc returns -1 in that case.
+  if key_down[.W] {
+    target := wav.next_leading(playing, i32(playing.frame_cursor))
+    if target >= 0 do playing.frame_cursor = f64(target)
+    key_down[.W] = false
+  }
   if key_down[.E] {
-    if playing.num_samples >= playing.frequency {
-      //playing.samples_raw = playing.samples_raw[:playing.sample_index] // TODO: is this right??
-      wav.scan_forward(playing)
-      log.debugf("E: samples: %d", playing.num_samples)
-      key_down[.E] = false // NOTE: manually disable it so it doesn't keep cutting
-    }
+    target := wav.next_trailing(playing, i32(playing.frame_cursor))
+    if target >= 0 do playing.frame_cursor = f64(target)
+    key_down[.E] = false
   }
-  // TODO: change 'b' to go to beginning of prev 'word' or section of higher gain
   if key_down[.B] {
-    wav.scan_backward(playing)
-    log.debugf("B: samples: %d", playing.num_samples)
-    key_down[.B] = false // NOTE: manually disable it so it doesn't keep cutting
+    // Apply a small back-tolerance before searching so playback drift
+    // can't make `b` re-snap to the edge we just landed on. Audio
+    // plays forward ~700–4400 frames per GUI frame, so without the
+    // tolerance: press b → land at edge X → audio drifts to X + drift
+    // → press b again → "largest edge strictly < X+drift" is still X
+    // → stuck. With a ~100 ms tolerance (sample_rate/10), the
+    // "just past X" zone no longer matches X for the search.
+    // `prev_leading` itself stays strict-less-than (GOALS.md
+    // primitive contract); the tolerance is a UX-layer concern.
+    // (Step 3 follow-up fix.)
+    cursor := i32(playing.frame_cursor)
+    back_tolerance := i32(playing.frequency) / 10
+    search_from := cursor - back_tolerance
+    if search_from < 0 do search_from = 0
+    target := wav.prev_leading(playing, search_from)
+    if target >= 0 do playing.frame_cursor = f64(target)
+    key_down[.B] = false
   }
-  // TODO: change 'w' to go to beginning of next 'word' or section of higher gain
+
+  // Live K tuning (GOALS.md → Live tuning):
+  //   [ / ] → K_HIGH ∓0.05 / ±0.05
+  //   - / = → K_LOW  ∓0.05 / ±0.05
+  // Bumping either knob marks the playing wav's edges dirty so the
+  // next `ensure_edges_fresh` recomputes against the new thresholds.
+  if key_down[.LEFT_BRACKET] {
+    wav.EDGE_K_HIGH -= 0.05
+    playing.edges.dirty = true
+    key_down[.LEFT_BRACKET] = false
+  }
+  if key_down[.RIGHT_BRACKET] {
+    wav.EDGE_K_HIGH += 0.05
+    playing.edges.dirty = true
+    key_down[.RIGHT_BRACKET] = false
+  }
+  if key_down[.MINUS] {
+    wav.EDGE_K_LOW -= 0.05
+    playing.edges.dirty = true
+    key_down[.MINUS] = false
+  }
+  if key_down[.EQUAL] {
+    wav.EDGE_K_LOW += 0.05
+    playing.edges.dirty = true
+    key_down[.EQUAL] = false
+  }
 
   // NOTE: scan through song
   if key_down[.H] {
@@ -1602,6 +1785,7 @@ event :: proc "c" (ev: ^sapp.Event) {
 
 cleanup :: proc "c" () {
   context = default_context
+  fps_instrument_shutdown()
   // TODO: cleanup or no? it's already cleaned up by the OS on process close, right?
   /*
 	sdtx.shutdown()

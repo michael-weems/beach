@@ -115,8 +115,7 @@ Wav :: struct {
   num_samples:    i32, // TODO: possible overflow?
   samples_raw:    []f32,
   samples:        ^f32,
-  leading_edges:  []int,
-  trailing_edges: []int,
+  edges:          Edges,
 
   // metadata
   file_path:      string,
@@ -436,6 +435,10 @@ read_from_file :: proc(wave: ^Wav, allocator: runtime.Allocator) {
   log.assert(wave.frequency != 0, "wave.freqency is 0")
   log.assert(wave.channels != 0, "wave.channels is 0")
   log.assert(len(wave.samples_raw) != 0, "wave.samples_raw length is 0")
+
+  // Mark edges dirty so the first access triggers a compute (lazy recompute
+  // is wired in main.update_gui → wav.ensure_edges_fresh).
+  wave.edges.dirty = true
 }
 
 Time :: struct {

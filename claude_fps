@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# claude_fps — compute FPS stats from BEACH_FRAME_LOG CSV files.
+#
+# Each CSV is expected to look like:
+#   frame,t_ms,duration_ms,fps
+#   0,...
+#   1,...   ← sokol clamps the first real frame to 100 ms; treated as
+#                startup noise and skipped here
+#   ...
+#
+# The first 2 data rows are skipped so the steady-state median isn't
+# distorted by sokol startup behavior. Output per file: median / p95 /
+# max frame duration in ms plus the implied FPS. When multiple files
+# are passed, a comparison row is appended using the first file as the
+# baseline (Δ as a percentage of baseline median).
+#
+# Usage:
+#   ./claude_fps <csv> [<csv> ...]
+#
+# Examples:
+#   ./claude_fps logs/baseline_2sec.csv
+#   ./claude_fps logs/baseline_30sec.csv logs/step2_30sec.csv
+#   ./claude_fps logs/baseline_*.csv logs/step2_*.csv
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "usage: $0 <csv> [<csv> ...]" >&2
+    exit 2
+fi
+
+# stats <csv>  →  prints "median p95 max n" on a single line.
+# n is the number of steady-state frames (rows past header + first 2).
+stats() {
+    awk -F, 'NR > 3 { print $3 }' "$1" \
+        | sort -n \
+        | awk '
+            { d[++n] = $1 }
+            END {
+                if (n == 0) { print "- - - 0"; exit }
+                mi = int((n + 1) / 2)
+                pi = int((n * 95 + 50) / 100)
+                if (pi < 1) pi = 1
+                if (pi > n) pi = n
+                printf "%.3f %.3f %.3f %d\n", d[mi], d[pi], d[n], n
+            }
+        '
+}
+
+print_one() {
+    local f="$1"
+    if [[ ! -f "$f" ]]; then
+        printf "%s\n  (file not found)\n\n" "$f"
+        return
+    fi
+    local result; result=$(stats "$f")
+    read -r med p95 max n <<<"$result"
+    if [[ "$n" -eq 0 ]]; then
+        printf "%s\n  (no steady-state frames)\n\n" "$f"
+        return
+    fi
+    local med_fps p95_fps max_fps
+    med_fps=$(awk "BEGIN{printf \"%.1f\", 1000/$med}")
+    p95_fps=$(awk "BEGIN{printf \"%.1f\", 1000/$p95}")
+    max_fps=$(awk "BEGIN{printf \"%.1f\", 1000/$max}")
+    printf "%s\n" "$f"
+    printf "  frames (steady) : %d\n" "$n"
+    printf "  median          : %8s ms   ->  %6s FPS\n" "$med" "$med_fps"
+    printf "  p95             : %8s ms   ->  %6s FPS\n" "$p95" "$p95_fps"
+    printf "  max             : %8s ms   ->  %6s FPS\n" "$max" "$max_fps"
+    printf "\n"
+}
+
+for f in "$@"; do print_one "$f"; done
+
+if [[ $# -gt 1 ]]; then
+    printf "Comparison (first file as baseline):\n\n"
+    printf "  %-45s %10s %8s %12s\n" "file" "med (ms)" "FPS" "Δ vs base"
+    printf "  %-45s %10s %8s %12s\n" "----" "--------" "---" "---------"
+    base=""
+    for f in "$@"; do
+        if [[ ! -f "$f" ]]; then continue; fi
+        result=$(stats "$f"); read -r med p95 max n <<<"$result"
+        if [[ "$n" -eq 0 ]]; then continue; fi
+        if [[ -z "$base" ]]; then
+            base="$med"; delta="—"
+        else
+            delta=$(awk "BEGIN{printf \"%+.1f%%\", ($med - $base) / $base * 100}")
+        fi
+        med_fps=$(awk "BEGIN{printf \"%.1f\", 1000/$med}")
+        printf "  %-45s %10s %8s %12s\n" "$f" "$med" "$med_fps" "$delta"
+    done
+fi

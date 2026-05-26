@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+audio_directory="$1"
+
+source ./build_shaders
+source ./build_odin
+
+test -f ${bin} || exit 1
+
+${bin} "${audio_directory}"
+

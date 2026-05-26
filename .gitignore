@@ -14,3 +14,7 @@ assets/*
 bak/
 
 sokol/
+
+# FPS instrumentation output (BEACH_FRAME_LOG=...)
+logs/
+test/
