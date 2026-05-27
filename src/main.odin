@@ -194,6 +194,8 @@ Globals :: struct {
   sampler:            sg.Sampler,
   wave_pipeline:      sgl.Pipeline,
   wave_pass_action:   sg.Pass_Action,
+  edge_pool:          thread.Pool,
+  edge_pool_started:  bool,
   wavelength:         [][6]f32,
   disable_animations: bool,
 }
@@ -282,6 +284,189 @@ play_audio :: proc(handle: Wave_Handle) {
     wav.which_format(w.format.audio_format),
     w.file_path,
   )
+}
+
+EDGE_WORKER_COUNT :: 1
+EDGE_INSTALLS_PER_FRAME :: 2
+
+Edge_Task_Data :: struct {
+  wave:          ^wav.Wav,
+  wave_index:    int,
+  generation:    u64,
+  params:        wav.Edge_Params,
+  classify_only: bool,
+  analysis:      wav.Edge_Analysis,
+  edges:         wav.Edges,
+  duration_ms:   f64,
+  frames:        i32,
+  ok:            bool,
+}
+
+edge_compute_worker :: proc(t: thread.Task) {
+  data := cast(^Edge_Task_Data)t.data
+  start := time.now()
+  if !data.classify_only {
+    data.analysis = wav.compute_edge_analysis(data.wave, data.params, t.allocator)
+  }
+  data.edges = wav.classify_edges(&data.analysis, data.params, t.allocator)
+  data.duration_ms = time.duration_milliseconds(time.since(start))
+  if data.wave.channels > 0 do data.frames = data.wave.num_samples / i32(data.wave.channels)
+  data.ok = true
+}
+
+edge_scheduler_init :: proc() {
+  thread.pool_init(&g.edge_pool, runtime.default_allocator(), EDGE_WORKER_COUNT)
+  thread.pool_start(&g.edge_pool)
+  g.edge_pool_started = true
+}
+
+edge_task_free :: proc(data: ^Edge_Task_Data, discard_results: bool) {
+  if data == nil do return
+  if discard_results {
+    wav.delete_edges(&data.edges)
+    delete(data.analysis.env_db, runtime.default_allocator())
+  }
+  free(data, runtime.default_allocator())
+}
+
+edge_scheduler_drain_done :: proc(discard_results := false) {
+  if !g.edge_pool_started do return
+
+  installed := 0
+  for installed < EDGE_INSTALLS_PER_FRAME {
+    task, got_task := thread.pool_pop_done(&g.edge_pool)
+    if !got_task do break
+
+    data := cast(^Edge_Task_Data)task.data
+    if data == nil do continue
+
+    if discard_results {
+      edge_task_free(data, true)
+      installed += 1
+      continue
+    }
+
+    w := data.wave
+    is_current := w != nil && data.ok && data.generation == w.edge_generation && w.edges.dirty
+
+    if is_current {
+      if !data.classify_only {
+        wav.delete_edge_analysis(&w.edge_analysis, alloc.edges_allocator)
+        w.edge_analysis = data.analysis
+        w.edge_analysis.dirty = false
+        wav.delete_all_sections(&w.edge_sections)
+        w.edge_sections = wav.discover_sections(&w.edge_analysis, w.edge_params, alloc.edges_allocator)
+      } else {
+        delete(data.analysis.env_db, runtime.default_allocator())
+      }
+
+      // Discard worker's file-level edges — we reclassify per-section
+      wav.delete_edges(&data.edges)
+
+      wav.fit_and_classify_sections(w.edge_sections[:], &w.edge_analysis, w.edge_params, alloc.edges_allocator)
+      wav.delete_edges(&w.edges)
+      w.edges = wav.merge_section_edges(w.edge_sections[:], alloc.edges_allocator)
+      w.edges.dirty = false
+      w.edge_status = .Ready
+
+      mode: string
+      if data.classify_only do mode = "classify-only"
+      else do mode = "full"
+      log.debugf(
+        "edge worker (%s): %s, %d frames, %.2f ms, leading=%d trailing=%d sections=%d",
+        mode,
+        w.file_name,
+        data.frames,
+        data.duration_ms,
+        len(w.edges.leading),
+        len(w.edges.trailing),
+        len(w.edge_sections),
+      )
+      edge_task_free(data, false)
+    } else {
+      if w != nil && data.generation == w.edge_generation {
+        w.edge_status = .Failed
+      }
+      edge_task_free(data, true)
+    }
+
+    installed += 1
+  }
+}
+
+edge_scheduler_try_schedule :: proc(handle: Wave_Handle) -> bool {
+  if !g.edge_pool_started do return false
+
+  index := int(handle)
+  if index < 1 || index > g.num_waves do return false
+
+  w := get_wav(handle)
+  if w == nil || !w.is_valid || !wav.edges_need_analysis(w) do return false
+
+  data := new(Edge_Task_Data, runtime.default_allocator())
+  data.wave = w
+  data.wave_index = index
+  data.generation = w.edge_generation
+  data.params = w.edge_params
+
+  if wav.analysis_is_cached(w) {
+    data.classify_only = true
+    data.analysis = wav.copy_edge_analysis(&w.edge_analysis, runtime.default_allocator())
+  }
+
+  w.edge_status = .Queued
+  thread.pool_add_task(&g.edge_pool, alloc.edges_allocator, edge_compute_worker, data, index)
+  return true
+}
+
+edge_scheduler_tick :: proc() {
+  if !g.edge_pool_started do return
+
+  edge_scheduler_drain_done()
+  if thread.pool_num_outstanding(&g.edge_pool) > 0 do return
+
+  active := Wave_Handle(g.pager.active_index)
+  if edge_scheduler_try_schedule(active) do return
+
+  paging := Wave_Handle(g.pager.paging_index)
+  if edge_scheduler_try_schedule(paging) do return
+
+  next_index := g.pager.paging_index + 1
+  if next_index > g.num_waves do next_index = 1
+  if edge_scheduler_try_schedule(Wave_Handle(next_index)) do return
+
+  prev_index := g.pager.paging_index - 1
+  if prev_index < 1 do prev_index = g.num_waves
+  if edge_scheduler_try_schedule(Wave_Handle(prev_index)) do return
+}
+
+edge_scheduler_shutdown :: proc() {
+  if !g.edge_pool_started do return
+  thread.pool_join(&g.edge_pool)
+  edge_scheduler_drain_done(true)
+  thread.pool_destroy(&g.edge_pool)
+  g.edge_pool_started = false
+}
+
+k_tune_section :: proc(w: ^wav.Wav, dk_high, dk_low: f32) {
+  if w == nil || len(w.edge_sections) == 0 do return
+  idx := wav.section_for_frame(w.edge_sections[:], i32(w.frame_cursor))
+  if idx < 0 do return
+  s := &w.edge_sections[idx]
+  s.params.k_high += dk_high
+  s.params.k_low += dk_low
+  s.auto_fit = false
+  wav.classify_section(s, &w.edge_analysis, alloc.edges_allocator)
+}
+
+k_tune_all_sections :: proc(w: ^wav.Wav, dk_high, dk_low: f32) {
+  if w == nil || len(w.edge_sections) == 0 do return
+  for &s in w.edge_sections {
+    s.params.k_high += dk_high
+    s.params.k_low += dk_low
+    s.auto_fit = false
+    wav.classify_section(&s, &w.edge_analysis, alloc.edges_allocator)
+  }
 }
 
 load_dir :: proc(dir: string, allocator: runtime.Allocator) {
@@ -511,6 +696,7 @@ init :: proc "c" () {
 
   load_dir(process_input.audio_dir, alloc.wave_allocator)
   log.assertf(g.num_waves > 0, "no wav files found in dir: %s", process_input.audio_dir)
+  edge_scheduler_init()
 
   // 3* the space for entities for saved off snippets + 1 for camera + 1 for 0-stub
   initial_entity_capacity := (3 * g.num_waves) + 1 + 1
@@ -665,115 +851,88 @@ init :: proc "c" () {
   play_audio(handle)
 }
 
+waveform_x_for_frame :: proc(frame, num_frames: int, half_w: f32) -> f32 {
+  if num_frames <= 0 do return -half_w
+  clamped_frame := clamp(frame, 0, num_frames - 1)
+  if num_frames == 1 do return -half_w
+  x_span := 2 * half_w
+  x_step := x_span / f32(num_frames - 1)
+  return -half_w + f32(clamped_frame) * x_step
+}
+
 draw_wavelength :: proc() {
   wave := get_wav(g.playing)
   if wave == nil || wave.num_samples == 0 || !wave.is_valid do return
 
-  // Iterate by FRAMES, not raw interleaved samples. samples_raw is
-  // [L, R, L, R, ...] for stereo (see wav.odin:139 — total_frames =
-  // num_samples / channels). Plotting one vertex per raw sample
-  // would draw L and R offset alternately. We take the left channel
-  // per frame; swap to (L+R)*0.5 if you want a mono mixdown.
-  num_frames := int(wav.total_frames(wave))
-  channels := int(wave.channels)
+  cache := &wave.waveform_cache
+  if cache.num_buckets == 0 do return
 
-  // World placement. The focused card lives at y = 0 (update_gui
-  // computes y = (paging_index - index) * CARD_SPACING, so the
-  // card whose index == paging_index sits at the origin row).
-  // We anchor the waveform on that row, at the same z as the cards.
+  num_frames := int(wav.total_frames(wave))
+
   y_center := f32(0)
   z := f32(-DEPTH_UI)
-
-  // Span the full visible width at z = -DEPTH_UI.
-  // BREADTH_UI is your existing approximation of the half-width
-  // visible at that depth (main.odin:728).
   half_w := BREADTH_UI
-  x_step := (14 * half_w) / f32(num_frames)
-
-  // PCM-float samples are in ~[-1, 1]. At z = -DEPTH_UI with
-  // fovy = 90° the vertical half-extent is ~DEPTH_UI / aspect
-  // (~5.6 world units on a 16:9 window), so a scale of 0.5 gives
-  // ±0.5 of vertical swing — visible but not eating the whole row.
   y_scale := f32(5)
-
-  // TODO: calculate all these constants per frame
   highlight_window := 5000
-  downsample_window := 20
 
-  sgl.c3f(0, 1, 0) // green — set once, sticks for the strip
-  sgl.begin_line_strip()
-  x := -half_w
-  mode := Draw_Mode.GREEN
-  mode_changed := false
-  for f := 0; f < num_frames; f += 1 {
-    b := f + downsample_window
-    sample := f32(0)
-    for f < b && f < num_frames - 1 {
-      if wave.samples_raw[f] > sample {
-        // downsampling to get maximum of a range
-        sample = wave.samples_raw[f] // left channel
-      }
-      f += 1
+  // Display resolution: bounded by screen width — one vertical bar
+  // per pixel column. The cached min/max envelope avoids re-scanning
+  // raw samples every frame.
+  screen_w := max(1, int(sapp.widthf()))
+  num_display := clamp(screen_w, 1, min(num_frames, 4096))
+
+  sgl.begin_lines()
+  for b in 0 ..< num_display {
+    frame_start := b * num_frames / num_display
+    frame_end := (b + 1) * num_frames / num_display
+
+    cb_start := frame_start / cache.bucket_size
+    cb_end := min((frame_end + cache.bucket_size - 1) / cache.bucket_size, cache.num_buckets)
+    if cb_start >= cache.num_buckets do continue
+
+    lo := cache.min_vals[cb_start]
+    hi := cache.max_vals[cb_start]
+    for cb in cb_start + 1 ..< cb_end {
+      if cache.min_vals[cb] < lo do lo = cache.min_vals[cb]
+      if cache.max_vals[cb] > hi do hi = cache.max_vals[cb]
     }
 
-    is_framecursor_in_window :=
-      f64(f - highlight_window) < wave.frame_cursor &&
-      wave.frame_cursor < f64(f + highlight_window)
+    x := waveform_x_for_frame(frame_start, num_frames, half_w)
 
-    if is_framecursor_in_window {
-      mode = .WHITE
-      mode_changed = true
-    } else if mode == .WHITE {
-      mode = .GREEN
-      mode_changed = true
-    } else do mode_changed = false
+    bucket_mid := frame_start + (frame_end - frame_start) / 2
+    in_window :=
+      f64(bucket_mid - highlight_window) < wave.frame_cursor &&
+      wave.frame_cursor < f64(bucket_mid + highlight_window)
+    if in_window do sgl.c3f(1, 1, 1)
+    else do sgl.c3f(0, 1, 0)
 
-    if mode_changed {
-      switch mode {
-      case .GREEN: sgl.c3f(0, 1, 0)
-      case .WHITE: sgl.c3f(1, 1, 1)
-      }
-    }
-
-    sgl.v3f(x, y_center + sample * y_scale, z)
-    x += x_step
+    sgl.v3f(x, y_center + lo * y_scale, z)
+    sgl.v3f(x, y_center + hi * y_scale, z)
   }
   sgl.end()
 
   // ─── Edge ticks ────────────────────────────────────────────────
-  // Vertical markers at every detected edge — green for leading,
-  // red for trailing. The waveform line strip advances `x` by
-  // `x_step` once per OUTER iteration, but each outer iteration
-  // consumes `downsample_window` frames internally. So the effective
-  // per-frame stride is `x_step / downsample_window`. Earlier code
-  // here used `x_step` directly, placing ticks 20× too far right.
-  // (Step 4 follow-up fix; documented in GOALS.md → Visualization.)
-  tick_x_step := x_step / f32(downsample_window)
   tick_half_h := y_scale * 1.1
 
-  sgl.c3f(0, 1, 0) // leading edges — green
+  sgl.c3f(0, 1, 0)
   sgl.begin_lines()
   for edge_frame in wave.edges.leading {
-    tx := -half_w + f32(edge_frame) * tick_x_step
+    tx := waveform_x_for_frame(int(edge_frame), num_frames, half_w)
     sgl.v3f(tx, y_center - tick_half_h, z)
     sgl.v3f(tx, y_center + tick_half_h, z)
   }
   sgl.end()
 
-  sgl.c3f(1, 0, 0) // trailing edges — red
+  sgl.c3f(1, 0, 0)
   sgl.begin_lines()
   for edge_frame in wave.edges.trailing {
-    tx := -half_w + f32(edge_frame) * tick_x_step
+    tx := waveform_x_for_frame(int(edge_frame), num_frames, half_w)
     sgl.v3f(tx, y_center - tick_half_h, z)
     sgl.v3f(tx, y_center + tick_half_h, z)
   }
   sgl.end()
 }
 
-Draw_Mode :: enum {
-  GREEN,
-  WHITE,
-}
 
 
 // ─── FPS instrumentation ──────────────────────────────────────────
@@ -1075,9 +1234,9 @@ update_gui :: proc(frame: Frame) {
 
   playing := get_wav(Wave_Handle(g.pager.active_index))
 
-  // Lazy edge recompute — early-returns on the dirty flag in steady state,
-  // so per-frame overhead is one bool check (GOALS.md #5).
-  wav.ensure_edges_fresh(playing, alloc.edges_allocator)
+  // Nonblocking edge analysis — schedules background work and installs
+  // completed results without blocking the render/audio frame.
+  edge_scheduler_tick()
 
   cam := &g.camera
 
@@ -1101,18 +1260,30 @@ update_gui :: proc(frame: Frame) {
   sdtx.printf("cam: target: x=%f y=%f z=%f\n", camera.target.x, camera.target.y, camera.target.z)
   sdtx.printf("cam: rotation=%f spin=%v\n", linalg.to_degrees(camera.rotation), spinning)
 
-  // Edge-detection debug overlay (GOALS.md → Live tuning). K values
-  // are package-level vars; thresholds and counts are derived per
-  // file by compute_edges and exposed on Wav.edges.
+  // Edge-detection debug overlay (GOALS.md → Live tuning).
+  section_idx := wav.section_for_frame(playing.edge_sections[:], i32(playing.frame_cursor))
   sdtx.printf(
-    "edges: K_HIGH=%.2f K_LOW=%.2f  t_high=%.2f t_low=%.2f dB  L/T=%d/%d\n",
-    wav.EDGE_K_HIGH,
-    wav.EDGE_K_LOW,
-    playing.edges.t_high_db,
-    playing.edges.t_low_db,
+    "edges: status=%s  L/T=%d/%d  sec=%d/%d",
+    wav.edge_status_string(playing.edge_status),
     len(playing.edges.leading),
     len(playing.edges.trailing),
+    section_idx + 1,
+    len(playing.edge_sections),
   )
+  if section_idx >= 0 && section_idx < len(playing.edge_sections) {
+    s := playing.edge_sections[section_idx]
+    fit_str: string
+    if s.auto_fit do fit_str = "auto"
+    else do fit_str = "manual"
+    sdtx.printf(
+      "  [%s] K=%.2f/%.2f IQR=%.1f",
+      fit_str,
+      s.params.k_high,
+      s.params.k_low,
+      s.stats.iqr_db,
+    )
+  }
+  sdtx.printf("\n")
 
   // TODO: translate camera_update functionality to apply to the world objects, not the camera
   //camera_update(dt)
@@ -1666,29 +1837,38 @@ process_user_input :: proc(frame: Frame) {
   }
 
   // Live K tuning (GOALS.md → Live tuning):
-  //   [ / ] → K_HIGH ∓0.05 / ±0.05
-  //   - / = → K_LOW  ∓0.05 / ±0.05
-  // Bumping either knob marks the playing wav's edges dirty so the
-  // next `ensure_edges_fresh` recomputes against the new thresholds.
+  //   [ / ]         → K_HIGH ∓0.05 / ±0.05 on the active section
+  //   - / =         → K_LOW  ∓0.05 / ±0.05 on the active section
+  //   Shift+[ / ]   → K_HIGH ∓0.05 / ±0.05 on ALL sections
+  //   Shift+- / =   → K_LOW  ∓0.05 / ±0.05 on ALL sections
+  shifted := key_down[.LEFT_SHIFT] || key_down[.RIGHT_SHIFT]
+  k_changed := false
   if key_down[.LEFT_BRACKET] {
-    wav.EDGE_K_HIGH -= 0.05
-    playing.edges.dirty = true
-    key_down[.LEFT_BRACKET] = false
+    if shifted do k_tune_all_sections(playing, -0.05, 0)
+    else do k_tune_section(playing, -0.05, 0)
+    k_changed = true; key_down[.LEFT_BRACKET] = false
   }
   if key_down[.RIGHT_BRACKET] {
-    wav.EDGE_K_HIGH += 0.05
-    playing.edges.dirty = true
-    key_down[.RIGHT_BRACKET] = false
+    if shifted do k_tune_all_sections(playing, +0.05, 0)
+    else do k_tune_section(playing, +0.05, 0)
+    k_changed = true; key_down[.RIGHT_BRACKET] = false
   }
   if key_down[.MINUS] {
-    wav.EDGE_K_LOW -= 0.05
-    playing.edges.dirty = true
-    key_down[.MINUS] = false
+    if shifted do k_tune_all_sections(playing, 0, -0.05)
+    else do k_tune_section(playing, 0, -0.05)
+    k_changed = true; key_down[.MINUS] = false
   }
   if key_down[.EQUAL] {
-    wav.EDGE_K_LOW += 0.05
-    playing.edges.dirty = true
-    key_down[.EQUAL] = false
+    if shifted do k_tune_all_sections(playing, 0, +0.05)
+    else do k_tune_section(playing, 0, +0.05)
+    k_changed = true; key_down[.EQUAL] = false
+  }
+  if k_changed {
+    if shifted { key_down[.LEFT_SHIFT] = false; key_down[.RIGHT_SHIFT] = false }
+    if wav.analysis_is_cached(playing) {
+      wav.delete_edges(&playing.edges)
+      playing.edges = wav.merge_section_edges(playing.edge_sections[:], alloc.edges_allocator)
+    }
   }
 
   // NOTE: scan through song
@@ -1785,6 +1965,7 @@ event :: proc "c" (ev: ^sapp.Event) {
 
 cleanup :: proc "c" () {
   context = default_context
+  edge_scheduler_shutdown()
   fps_instrument_shutdown()
   // TODO: cleanup or no? it's already cleaned up by the OS on process close, right?
   /*
@@ -1830,4 +2011,3 @@ main :: proc() {
     },
   )
 }
-

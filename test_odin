@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+odin test ./src/audio/wav -debug

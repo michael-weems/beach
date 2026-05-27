@@ -102,26 +102,32 @@ WaveDataHeader :: struct #packed {
 // TODO: will need to adjust it based on other factors like edits and additions
 Wav :: struct {
   // config
-  channels:       i16,
-  frequency:      i32,
+  channels:        i16,
+  frequency:       i32,
   // state
-  is_valid:       bool,
-  is_playing:     bool,
-  frame_cursor:   f64,
-  left_marker:    int,
-  right_marker:   int,
+  is_valid:        bool,
+  is_playing:      bool,
+  frame_cursor:    f64,
+  left_marker:     int,
+  right_marker:    int,
 
   // data
-  num_samples:    i32, // TODO: possible overflow?
-  samples_raw:    []f32,
-  samples:        ^f32,
-  edges:          Edges,
+  num_samples:     i32, // TODO: possible overflow?
+  samples_raw:     []f32,
+  samples:         ^f32,
+  waveform_cache:  Waveform_Cache,
+  edges:           Edges,
+  edge_analysis:   Edge_Analysis,
+  edge_params:     Edge_Params,
+  edge_sections:   [dynamic]Edge_Section,
+  edge_status:     Edge_Status,
+  edge_generation: u64,
 
   // metadata
-  file_path:      string,
-  file_name:      string,
-  format:         PcmFormatHeader,
-  time:           Time,
+  file_path:       string,
+  file_name:       string,
+  format:          PcmFormatHeader,
+  time:            Time,
 }
 
 start_over :: proc(w: ^Wav) {
@@ -436,9 +442,14 @@ read_from_file :: proc(wave: ^Wav, allocator: runtime.Allocator) {
   log.assert(wave.channels != 0, "wave.channels is 0")
   log.assert(len(wave.samples_raw) != 0, "wave.samples_raw length is 0")
 
-  // Mark edges dirty so the first access triggers a compute (lazy recompute
-  // is wired in main.update_gui → wav.ensure_edges_fresh).
-  wave.edges.dirty = true
+  // Pre-compute the min/max waveform envelope for fast drawing.
+  wave.waveform_cache = compute_waveform_cache(wave)
+
+  // Initialize per-file edge params and mark both analysis + edges dirty
+  // so the edge scheduler computes them after load.
+  wave.edge_params = default_edge_params()
+  wave.edge_analysis.dirty = true
+  mark_edges_dirty(wave)
 }
 
 Time :: struct {
@@ -519,7 +530,47 @@ count_samples :: proc(format: PcmFormatHeader) -> i32 {
   return format.chunk_size / i32((format.bits_per_sample / 8))
 }
 
+WAVEFORM_CACHE_BUCKET :: 256
+
+Waveform_Cache :: struct {
+  min_vals:    []f32,
+  max_vals:    []f32,
+  bucket_size: int,
+  num_buckets: int,
+}
+
+compute_waveform_cache :: proc(w: ^Wav) -> Waveform_Cache {
+  if w == nil || w.num_samples == 0 || w.channels <= 0 do return {}
+  frames := int(total_frames(w))
+  channels := int(w.channels)
+  bucket_size := WAVEFORM_CACHE_BUCKET
+  num_buckets := (frames + bucket_size - 1) / bucket_size
+
+  mins := make([]f32, num_buckets)
+  maxs := make([]f32, num_buckets)
+
+  for b in 0 ..< num_buckets {
+    start := b * bucket_size
+    end := min(start + bucket_size, frames)
+    lo := w.samples_raw[start * channels]
+    hi := lo
+    for f in start + 1 ..< end {
+      s := w.samples_raw[f * channels]
+      if s < lo do lo = s
+      if s > hi do hi = s
+    }
+    mins[b] = lo
+    maxs[b] = hi
+  }
+
+  return Waveform_Cache{
+    min_vals    = mins,
+    max_vals    = maxs,
+    bucket_size = bucket_size,
+    num_buckets = num_buckets,
+  }
+}
+
 seconds :: proc(wav: Wav) -> f32 {
   return f32(len(wav.samples_raw)) / f32((wav.frequency * i32(wav.channels)))
 }
-
