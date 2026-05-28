@@ -1,3 +1,5 @@
+#+feature using-stmt
+
 package beach
 
 import "./assertprefix"
@@ -206,7 +208,7 @@ DEPTH_UI :: f32(10.0) // NOTE: how far from the camera the base UI elements shou
 DEPTH_UI_SURFACE :: f32(8.0) // NOTE: how far from the camera the surface UI elements should be
 DEPTH_UI_OVERLAY :: f32(6.0) // NOTE: how far from the camera the overlay UI elements should be
 
-convert_to_sokol_rgb :: proc(color: sg.Color) -> sg.Color {
+convert_to_sokol_rgb :: proc(color: Color) -> sg.Color {
   return sg.Color{r = color.r / 255, g = color.g / 255, b = color.b / 255, a = color.a / 255}
 }
 
@@ -223,7 +225,9 @@ ColorKey :: enum {
   HIGHLIGHT_HIGH,
 }
 
-ColorTheme :: [ColorKey]sg.Color {
+Color :: Vec4
+
+ColorTheme :: [ColorKey]Color {
   // NOTE: for now based on rose-pine ish theme, make this adaptable via theme file
   .BASE           = {25, 23, 36, 242},
   .SURFACE        = {31, 29, 46, 255},
@@ -355,7 +359,11 @@ edge_scheduler_drain_done :: proc(discard_results := false) {
         w.edge_analysis = data.analysis
         w.edge_analysis.dirty = false
         wav.delete_all_sections(&w.edge_sections)
-        w.edge_sections = wav.discover_sections(&w.edge_analysis, w.edge_params, alloc.edges_allocator)
+        w.edge_sections = wav.discover_sections(
+          &w.edge_analysis,
+          w.edge_params,
+          alloc.edges_allocator,
+        )
       } else {
         delete(data.analysis.env_db, runtime.default_allocator())
       }
@@ -363,7 +371,12 @@ edge_scheduler_drain_done :: proc(discard_results := false) {
       // Discard worker's file-level edges — we reclassify per-section
       wav.delete_edges(&data.edges)
 
-      wav.fit_and_classify_sections(w.edge_sections[:], &w.edge_analysis, w.edge_params, alloc.edges_allocator)
+      wav.fit_and_classify_sections(
+        w.edge_sections[:],
+        &w.edge_analysis,
+        w.edge_params,
+        alloc.edges_allocator,
+      )
       wav.delete_edges(&w.edges)
       w.edges = wav.merge_section_edges(w.edge_sections[:], alloc.edges_allocator)
       w.edges.dirty = false
@@ -860,26 +873,46 @@ waveform_x_for_frame :: proc(frame, num_frames: int, half_w: f32) -> f32 {
   return -half_w + f32(clamped_frame) * x_step
 }
 
-draw_wavelength :: proc() {
-  wave := get_wav(g.playing)
+switch_to_line_color :: proc(using c: sg.Color) {
+  sgl.c4f(r, g, b, a)
+}
+
+Draw_Wavelength_Desc :: struct {
+  wave_color:          Color,
+  leading_edge_color:  Color,
+  trailing_edge_color: Color,
+  frame_color:         Color,
+  scale:               Vec2,
+  position:            Vec3,
+  highlight_window:    int,
+  screen_width:        f32,
+  screen_height:       f32,
+  hide_tickmarks:      bool,
+}
+
+draw_wavelength :: proc(wave: Wave_Handle, desc: Draw_Wavelength_Desc) {
+  wave := get_wav(wave)
   if wave == nil || wave.num_samples == 0 || !wave.is_valid do return
 
   cache := &wave.waveform_cache
   if cache.num_buckets == 0 do return
 
+  frame_color := convert_to_sokol_rgb(desc.frame_color)
+  leading_edge_color := convert_to_sokol_rgb(desc.leading_edge_color)
+  trailing_edge_color := convert_to_sokol_rgb(desc.trailing_edge_color)
+  wave_color := convert_to_sokol_rgb(desc.wave_color)
+
   num_frames := int(wav.total_frames(wave))
 
-  y_center := f32(0)
-  z := f32(-DEPTH_UI)
+  y_center := desc.position.y
+  z := desc.position.z
   half_w := BREADTH_UI
-  y_scale := f32(5)
-  highlight_window := 5000
+  y_scale := desc.scale.y
 
   // Display resolution: bounded by screen width — one vertical bar
   // per pixel column. The cached min/max envelope avoids re-scanning
   // raw samples every frame.
-  screen_w := max(1, int(sapp.widthf()))
-  num_display := clamp(screen_w, 1, min(num_frames, 4096))
+  num_display := clamp(int(desc.screen_width), 1, min(num_frames, 4096))
 
   sgl.begin_lines()
   for b in 0 ..< num_display {
@@ -901,38 +934,37 @@ draw_wavelength :: proc() {
 
     bucket_mid := frame_start + (frame_end - frame_start) / 2
     in_window :=
-      f64(bucket_mid - highlight_window) < wave.frame_cursor &&
-      wave.frame_cursor < f64(bucket_mid + highlight_window)
-    if in_window do sgl.c3f(1, 1, 1)
-    else do sgl.c3f(0, 1, 0)
+      f64(bucket_mid - desc.highlight_window) < wave.frame_cursor &&
+      wave.frame_cursor < f64(bucket_mid + desc.highlight_window)
+    if in_window do switch_to_line_color(frame_color)
+    else do switch_to_line_color(wave_color)
 
     sgl.v3f(x, y_center + lo * y_scale, z)
     sgl.v3f(x, y_center + hi * y_scale, z)
   }
   sgl.end()
 
-  // ─── Edge ticks ────────────────────────────────────────────────
-  tick_half_h := y_scale * 1.1
+  if desc.hide_tickmarks do return
 
-  sgl.c3f(0, 1, 0)
+  // ─── Edge ticks ────────────────────────────────────────────────
+  switch_to_line_color(leading_edge_color)
   sgl.begin_lines()
   for edge_frame in wave.edges.leading {
     tx := waveform_x_for_frame(int(edge_frame), num_frames, half_w)
-    sgl.v3f(tx, y_center - tick_half_h, z)
-    sgl.v3f(tx, y_center + tick_half_h, z)
+    sgl.v3f(tx, y_center + (y_scale * 0.5), z)
+    sgl.v3f(tx, y_center + (y_scale * 0.51), z)
   }
   sgl.end()
 
-  sgl.c3f(1, 0, 0)
+  switch_to_line_color(trailing_edge_color)
   sgl.begin_lines()
   for edge_frame in wave.edges.trailing {
     tx := waveform_x_for_frame(int(edge_frame), num_frames, half_w)
-    sgl.v3f(tx, y_center - tick_half_h, z)
-    sgl.v3f(tx, y_center + tick_half_h, z)
+    sgl.v3f(tx, y_center + (y_scale * 0.5), z)
+    sgl.v3f(tx, y_center + (y_scale * 0.51), z)
   }
   sgl.end()
 }
-
 
 
 // ─── FPS instrumentation ──────────────────────────────────────────
@@ -1201,11 +1233,14 @@ bool_str :: proc(val: bool) -> string {
   return "false"
 }
 
-CARD_SPACING :: 1.2
+rotation := f32(0)
+
 update_gui :: proc(frame: Frame) {
   dt := frame.dt
   w := frame.screen_width
   h := frame.screen_height
+
+  CARD_SPACING := h
 
   // NOTE: camera should stay put while all other entities move
   // NOTE: coordinates should be
@@ -1214,6 +1249,8 @@ update_gui :: proc(frame: Frame) {
   // NOTE: - left:   -1
   // NOTE: - right:   1
   // so translate all entities to their correct spot first
+
+  // TODO: wavelength drawings should be entities
 
   // translate y-positions to correct world-coordinates
   for index in 1 ..= g.num_waves {
@@ -1321,10 +1358,45 @@ update_gui :: proc(frame: Frame) {
       camera.target.x,        camera.target.y,        camera.target.z,         // target
       0, 1, 0,                                                         // up
   )
+
+  // TODO: move away from sgl, just use sg so I can do actual matrix calculations
+  sgl.translate(0,0, -DEPTH_UI)
+  sgl.rotate(rotation, 0, 1, 0)
+  sgl.translate(0,0, 0)
+  rotation += dt
   // odinfmt: enable
 
-  draw_wavelength()
+  draw_wavelength(
+    g.playing,
+    {
+      wave_color = ColorTheme[.TEXT],
+      leading_edge_color = ColorTheme[.TEXT],
+      trailing_edge_color = ColorTheme[.OVERLAY],
+      frame_color = ColorTheme[.HIGHLIGHT_HIGH],
+      scale = {1, 8},
+      position = {0, 0, -DEPTH_UI},
+      highlight_window = 5000,
+      screen_width = w,
+      screen_height = h,
+    },
+  )
 
+  hovering := Wave_Handle(g.pager.paging_index)
+  if hovering != g.playing {
+    draw_wavelength(
+      Wave_Handle(g.pager.paging_index),
+      {
+        wave_color = ColorTheme[.MUTED],
+        frame_color = ColorTheme[.HIGHLIGHT_LOW],
+        scale = {0.5, 1.5},
+        position = {0.625 * h, BREADTH_UI, -DEPTH_UI},
+        highlight_window = 5000,
+        screen_width = w,
+        screen_height = h,
+        hide_tickmarks = true,
+      },
+    )
+  }
   sgl.pop_pipeline()
 
 
@@ -2011,3 +2083,4 @@ main :: proc() {
     },
   )
 }
+
