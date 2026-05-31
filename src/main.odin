@@ -1360,10 +1360,6 @@ update_gui :: proc(frame: Frame) {
   )
 
   // TODO: move away from sgl, just use sg so I can do actual matrix calculations
-  sgl.translate(0,0, -DEPTH_UI)
-  sgl.rotate(rotation, 0, 1, 0)
-  sgl.translate(0,0, 0)
-  rotation += dt
   // odinfmt: enable
 
   draw_wavelength(
